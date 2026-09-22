@@ -1,0 +1,116 @@
+{
+  "rows": 234,
+  "min_support_off_snaps": 5,
+  "rows_after_min_support": 211,
+  "weighted_pass_rate_mae": 0.056765782941318566,
+  "mean_pass_rate_error": -0.042770366679475876,
+  "mean_predicted_pass_rate": 0.5330885580663295,
+  "mean_actual_pass_rate": 0.5758589247458054,
+  "top_bucket_errors": [
+    {
+      "bucket_key": "down_1|dist_medium|score_trailing_big|clock_q4_late",
+      "off_snaps": 33,
+      "actual_pass_rate": 0.9393939393939394,
+      "predicted_pass_prob_mean": 0.5553902805769357,
+      "pass_rate_error": -0.3840036588170037
+    },
+    {
+      "bucket_key": "down_1|dist_medium|score_tied|clock_q2_late",
+      "off_snaps": 8,
+      "actual_pass_rate": 0.75,
+      "predicted_pass_prob_mean": 0.38033866181777165,
+      "pass_rate_error": -0.36966133818222835
+    },
+    {
+      "bucket_key": "down_2|dist_short|score_tied|clock_q4_late",
+      "off_snaps": 19,
+      "actual_pass_rate": 0.5789473684210527,
+      "predicted_pass_prob_mean": 0.2466262176386593,
+      "pass_rate_error": -0.3323211507823933
+    },
+    {
+      "bucket_key": "down_1|dist_short|score_trailing|clock_q4_late",
+      "off_snaps": 41,
+      "actual_pass_rate": 0.5365853658536586,
+      "predicted_pass_prob_mean": 0.23009733461166543,
+      "pass_rate_error": -0.30648803124199314
+    },
+    {
+      "bucket_key": "down_1|dist_long|score_tied|clock_q4_late",
+      "off_snaps": 158,
+      "actual_pass_rate": 0.5949367088607594,
+      "predicted_pass_prob_mean": 0.28976623143462443,
+      "pass_rate_error": -0.305170477426135
+    },
+    {
+      "bucket_key": "down_1|dist_short|score_trailing_big|clock_q4_late",
+      "off_snaps": 58,
+      "actual_pass_rate": 0.6896551724137931,
+      "predicted_pass_prob_mean": 0.4172532685036504,
+      "pass_rate_error": -0.27240190391014274
+    },
+    {
+      "bucket_key": "down_1|dist_short|score_tied|clock_q2_late",
+      "off_snaps": 7,
+      "actual_pass_rate": 0.5714285714285714,
+      "predicted_pass_prob_mean": 0.30168671788379564,
+      "pass_rate_error": -0.26974185354477576
+    },
+    {
+      "bucket_key": "down_4|dist_medium|score_leading_big|clock_q4_late",
+      "off_snaps": 8,
+      "actual_pass_rate": 0.25,
+      "predicted_pass_prob_mean": 0.5006621844986703,
+      "pass_rate_error": 0.2506621844986703
+    },
+    {
+      "bucket_key": "down_1|dist_long|score_trailing|clock_q4_late",
+      "off_snaps": 799,
+      "actual_pass_rate": 0.8060075093867334,
+      "predicted_pass_prob_mean": 0.5585573111153906,
+      "pass_rate_error": -0.24745019827134274
+    },
+    {
+      "bucket_key": "down_3|dist_medium|score_tied|clock_q4_late",
+      "off_snaps": 22,
+      "actual_pass_rate": 0.9090909090909091,
+      "predicted_pass_prob_mean": 0.6754032312828109,
+      "pass_rate_error": -0.23368767780809818
+    },
+    {
+      "bucket_key": "down_2|dist_short|score_trailing_big|clock_q2_late",
+      "off_snaps": 102,
+      "actual_pass_rate": 0.6862745098039216,
+      "predicted_pass_prob_mean": 0.47091875571894526,
+      "pass_rate_error": -0.21535575408497631
+    },
+    {
+      "bucket_key": "down_2|dist_long|score_tied|clock_q4_late",
+      "off_snaps": 78,
+      "actual_pass_rate": 0.7435897435897436,
+      "predicted_pass_prob_mean": 0.5316803446276861,
+      "pass_rate_error": -0.21190939896205752
+    },
+    {
+      "bucket_key": "down_4|dist_medium|score_trailing_big|clock_first_half",
+      "off_snaps": 5,
+      "actual_pass_rate": 0.6,
+      "predicted_pass_prob_mean": 0.800104751237938,
+      "pass_rate_error": 0.20010475123793803
+    },
+    {
+      "bucket_key": "down_1|dist_medium|score_trailing|clock_q4_late",
+      "off_snaps": 28,
+      "actual_pass_rate": 0.4642857142857143,
+      "predicted_pass_prob_mean": 0.2656700435523225,
+      "pass_rate_error": -0.1986156707333918
+    },
+    {
+      "bucket_key": "down_1|dist_medium|score_leading_big|clock_q2_late",
+      "off_snaps": 23,
+      "actual_pass_rate": 0.6086956521739131,
+      "predicted_pass_prob_mean": 0.4116917434377952,
+      "pass_rate_error": -0.1970039087361179
+    }
+  ]
+}

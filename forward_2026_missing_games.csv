@@ -1,0 +1,2 @@
+game_id,week,home_team,away_team,reason
+2026_01_NE_SEA,1,SEA,NE,error: A process in the process pool was terminated abruptly while the future was running or pending.

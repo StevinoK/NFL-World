@@ -1,0 +1,50 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Run Feature Dashboard",
+      "type": "shell",
+      "command": "${config:python.defaultInterpreterPath}",
+      "args": ["run_feature_dashboard.py"],
+      "group": "build",
+      "isBackground": true,
+      "problemMatcher": []
+    },
+    {
+      "label": "Run Game Sim Dashboard",
+      "type": "shell",
+      "command": "${config:python.defaultInterpreterPath}",
+      "args": ["run_game_sim_dashboard.py"],
+      "group": "build",
+      "isBackground": true,
+      "problemMatcher": []
+    },
+    {
+      "label": "Run DFS Dashboard",
+      "type": "shell",
+      "command": "${config:python.defaultInterpreterPath}",
+      "args": ["run_dfs_dashboard.py"],
+      "group": "build",
+      "isBackground": true,
+      "problemMatcher": []
+    },
+    {
+      "label": "Run Game Sim Results Dashboard",
+      "type": "shell",
+      "command": "${config:python.defaultInterpreterPath}",
+      "args": ["run_game_sim_results_dashboard.py"],
+      "group": "build",
+      "isBackground": true,
+      "problemMatcher": []
+    },
+    {
+      "label": "Simulate Teams vs Synthetic Opponent",
+      "type": "shell",
+      "command": "${config:python.defaultInterpreterPath}",
+      "args": ["simulate_synthetic_home_games.py", "--week", "1", "--simulations", "200", "--workers", "4"],
+      "group": "build",
+      "isBackground": false,
+      "problemMatcher": []
+    }
+  ]
+}

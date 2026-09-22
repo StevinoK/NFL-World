@@ -1,0 +1,14 @@
+# Tested runtime family: Python 3.9 on Windows.
+altair
+joblib
+matplotlib
+nfl-data-py
+numpy
+pandas
+plotly
+requests
+scikit-learn
+scipy
+streamlit==1.50.0
+streamlit-sortables
+torch==2.8.0

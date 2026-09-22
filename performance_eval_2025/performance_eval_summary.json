@@ -1,0 +1,21 @@
+{
+  "rows": {
+    "results": 64,
+    "attempt_diagnostics": 1280,
+    "team_calibration": 128,
+    "team_draws": 2560,
+    "model_performance": 30,
+    "ordinal_efficiency": 9,
+    "runtime_sanity": 8,
+    "attempt_deltas": 128,
+    "coverage_audit": 4
+  },
+  "outputs": {
+    "model_performance_summary_csv": "C:\\Users\\steve\\OneDrive\\Desktop\\Football\\Modeling\\performance_eval_2025\\model_performance_summary.csv",
+    "ordinal_efficiency_summary_csv": "C:\\Users\\steve\\OneDrive\\Desktop\\Football\\Modeling\\performance_eval_2025\\ordinal_efficiency_summary.csv",
+    "runtime_sanity_checks_csv": "C:\\Users\\steve\\OneDrive\\Desktop\\Football\\Modeling\\performance_eval_2025\\runtime_sanity_checks.csv",
+    "attempt_volume_deltas_csv": "C:\\Users\\steve\\OneDrive\\Desktop\\Football\\Modeling\\performance_eval_2025\\attempt_volume_deltas.csv",
+    "row_coverage_audit_csv": "C:\\Users\\steve\\OneDrive\\Desktop\\Football\\Modeling\\performance_eval_2025\\row_coverage_audit.csv",
+    "performance_report_html": "C:\\Users\\steve\\OneDrive\\Desktop\\Football\\Modeling\\performance_eval_2025\\performance_report.html"
+  }
+}

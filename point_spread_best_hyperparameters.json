@@ -1,0 +1,12 @@
+{
+  "params": {
+    "max_iter": 300,
+    "max_depth": 5,
+    "max_leaf_nodes": 42,
+    "learning_rate": 0.01607123851203988,
+    "l2_regularization": 0.00011092068418536184,
+    "min_samples_leaf": 40
+  },
+  "cv_mae": 10.448115066317467,
+  "n_splits": 4
+}

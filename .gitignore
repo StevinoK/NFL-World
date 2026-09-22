@@ -1,0 +1,38 @@
+# Python environments and caches
+.venv/
+NFL.venv/
+NFL_PM.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Application caches and local editor state
+.team_logo_cache/
+.streamlit/
+.vscode/*.log
+
+# Generated reports, logs, and simulation/training outputs
+*.log
+*_output.txt
+backtest_2025_game_results/
+forward_2026_game_results/
+forward_2026_*.csv
+forward_2026_*.json
+historical_feature_bakeoff/
+hyperparameter_tuning/
+Simulations/
+weighted_rolling_full/
+weighted_rolling_smoke/
+yac_ordinal_sweep_*/
+outputs/
+
+# Local data copied from external sources or rebuilt by scripts
+player_stats_wide.csv
+team_stats_wide.csv
+depth_charts.csv
+wr_means.csv
+wr_covs.csv
+rb_means.csv
+rb_covs.csv

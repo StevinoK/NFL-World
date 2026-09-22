@@ -1,0 +1,9 @@
+{
+  "season": 2026,
+  "games_projected": 0,
+  "note": "Forward-looking projections; no actual game data for comparison.",
+  "projection_metadata": {
+    "data_cutoff_date": "latest available",
+    "simulations_per_game": 2
+  }
+}
