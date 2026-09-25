@@ -3,7 +3,7 @@
   "tasks": [
     {
       "label": "Run Feature Dashboard",
-      "type": "shell",
+      "type": "process",
       "command": "${config:python.defaultInterpreterPath}",
       "args": ["run_feature_dashboard.py"],
       "group": "build",
@@ -12,7 +12,7 @@
     },
     {
       "label": "Run Game Sim Dashboard",
-      "type": "shell",
+      "type": "process",
       "command": "${config:python.defaultInterpreterPath}",
       "args": ["run_game_sim_dashboard.py"],
       "group": "build",
@@ -21,7 +21,7 @@
     },
     {
       "label": "Run DFS Dashboard",
-      "type": "shell",
+      "type": "process",
       "command": "${config:python.defaultInterpreterPath}",
       "args": ["run_dfs_dashboard.py"],
       "group": "build",
@@ -30,7 +30,7 @@
     },
     {
       "label": "Run Game Sim Results Dashboard",
-      "type": "shell",
+      "type": "process",
       "command": "${config:python.defaultInterpreterPath}",
       "args": ["run_game_sim_results_dashboard.py"],
       "group": "build",
@@ -39,7 +39,7 @@
     },
     {
       "label": "Simulate Teams vs Synthetic Opponent",
-      "type": "shell",
+      "type": "process",
       "command": "${config:python.defaultInterpreterPath}",
       "args": ["simulate_synthetic_home_games.py", "--week", "1", "--simulations", "200", "--workers", "4"],
       "group": "build",

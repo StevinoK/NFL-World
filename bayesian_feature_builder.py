@@ -292,12 +292,28 @@ def build_future_context(pbp: pd.DataFrame, weeks_ahead: int = 1) -> FutureConte
     return FutureContext(games=games, team_slots=team_slots, player_slots=player_slots)
 
 
+def _cached_pbp_years_present(years: Iterable[int], cache_path: Path) -> list[int]:
+    """Return the subset of years that already have a populated pbp cache folder."""
+    missing: list[int] = []
+    for year in years:
+        season_dirs = list(cache_path.glob(f"season={year}*")) if cache_path.exists() else []
+        if not any(any(d.glob("*.parquet")) for d in season_dirs):
+            missing.append(year)
+    return missing
+
+
 def load_pbp_data(years: Iterable[int], cache_path: Path = DEFAULT_CACHE_PATH) -> pd.DataFrame:
     years = list(years)
     # The current season is still being played, so its cache file is incomplete/stale each run.
     current_season = datetime.now().year
     cached_years = [year for year in years if year != current_season]
     live_years = [year for year in years if year == current_season]
+
+    missing_years = _cached_pbp_years_present(cached_years, cache_path)
+    if missing_years:
+        print(f"Populating pbp cache for missing season(s) {missing_years} in {cache_path}")
+        cache_path.mkdir(parents=True, exist_ok=True)
+        nfl.cache_pbp(missing_years, alt_path=str(cache_path))
 
     frames: list[pd.DataFrame] = []
     if cached_years:
