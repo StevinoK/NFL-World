@@ -3,7 +3,7 @@
 Reads the per-game / combined CSVs written by `game_sim_dashboard.py` (single game
 run or the "Simulate all games this week" batch) and renders, per selected game, a
 LightSource-shaded discrete scorigami grid (matplotlib) plus player stat
-histograms/scatter with explicit player+stat+range filters (no graph zoom/brush).
+histograms and binned heatmaps with explicit player+stat+range filters (no graph zoom/brush).
 """
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ import plotly.graph_objects as go
 import streamlit as st
 from plotly.subplots import make_subplots
 from matplotlib.colors import BoundaryNorm, LightSource, LinearSegmentedColormap
-from matplotlib.ticker import MaxNLocator
+from matplotlib.ticker import MaxNLocator, PercentFormatter
 from scipy.ndimage import gaussian_filter
 from project_paths import DEFAULT_SIMULATION_OUTPUT_DIR
 
@@ -352,31 +352,78 @@ def build_histogram(full_series: pd.Series, selected_sims: Optional[Set[int]], l
     return fig
 
 
-def build_scatter(
+def _stat_heatmap_edges(values: pd.Series, bins: int = 12, max_integer_bins: int = 24) -> np.ndarray:
+    numeric = pd.to_numeric(values, errors="coerce").dropna().to_numpy(dtype=float)
+    low, high = float(numeric.min()), float(numeric.max())
+    integer_values = np.all(np.isclose(numeric, np.rint(numeric)))
+    if integer_values:
+        low_integer, high_integer = round(low), round(high)
+        value_count = high_integer - low_integer + 1
+        bin_width = max(1, int(np.ceil(value_count / max_integer_bins)))
+        offsets = np.arange(0, value_count, bin_width)
+        edges = low_integer - 0.5 + offsets
+        return np.append(edges, high_integer + 0.5)
+    if low == high:
+        return np.linspace(low - 0.5, high + 0.5, bins + 1)
+    return np.linspace(low, high, bins + 1)
+
+
+def build_stat_heatmap(
     left_series: pd.Series, right_series: pd.Series, selected_sims: Optional[Set[int]], left_label: str, right_label: str
-) -> go.Figure:
+) -> plt.Figure:
     joined = pd.concat([left_series.rename("left"), right_series.rename("right")], axis=1).dropna()
-    fig = go.Figure()
+    if selected_sims is not None:
+        joined = joined[joined.index.isin(selected_sims)]
+
+    fig, ax = plt.subplots(figsize=(8, 4.5))
     if joined.empty:
-        fig.update_layout(xaxis_title=left_label, yaxis_title=right_label, height=420)
+        ax.text(0.5, 0.5, "No simulations match the current filters.", ha="center", va="center", transform=ax.transAxes)
+        ax.set_axis_off()
         return fig
 
-    mask = joined.index.isin(selected_sims) if selected_sims is not None else pd.Series(True, index=joined.index)
-    background, highlighted = joined[~mask], joined[mask]
-    if not background.empty:
-        fig.add_trace(
-            go.Scatter(
-                x=background["left"], y=background["right"], mode="markers",
-                marker=dict(color="lightgrey", size=6), name="Filtered out",
-            )
-        )
-    fig.add_trace(
-        go.Scatter(
-            x=highlighted["left"], y=highlighted["right"], mode="markers",
-            marker=dict(color=LEFT_COLOR, size=7), name="Selected",
-        )
+    x_edges = _stat_heatmap_edges(joined["left"])
+    y_edges = _stat_heatmap_edges(joined["right"])
+    counts, x_edges, y_edges = np.histogram2d(
+        joined["left"], joined["right"], bins=(x_edges, y_edges)
     )
-    fig.update_layout(xaxis_title=left_label, yaxis_title=right_label, height=420, showlegend=True)
+    outcome_percentages = (counts / len(joined) * 100).T
+    levels = MaxNLocator(nbins=10).tick_values(0, max(float(outcome_percentages.max()), 1.0))
+    cmap = plt.get_cmap("BuPu")
+    norm = BoundaryNorm(levels, ncolors=cmap.N, clip=True)
+    elevation = outcome_percentages / max(float(outcome_percentages.max()), 1e-9)
+    rgb = LightSource(azdeg=315, altdeg=45).shade_rgb(
+        cmap(norm(outcome_percentages))[:, :, :3],
+        elevation,
+        vert_exag=RELIEF_EXAGGERATION,
+        dx=1.0,
+        dy=1.0,
+        blend_mode="overlay",
+    )
+    ax.pcolormesh(
+        x_edges, y_edges, rgb, shading="flat", edgecolors="black", linewidth=0.4
+    )
+    ax.set_aspect("auto")
+    for axis, edges in ((ax.xaxis, x_edges), (ax.yaxis, y_edges)):
+        integer_bins = np.allclose(edges + 0.5, np.rint(edges + 0.5)) and np.allclose(
+            np.diff(edges), np.rint(np.diff(edges))
+        )
+        if integer_bins:
+            if len(edges) - 1 <= 10:
+                axis.set_ticks((edges[:-1] + edges[1:]) / 2)
+            else:
+                axis.set_major_locator(MaxNLocator(nbins=8, integer=True))
+    ax.set_xlabel(left_label)
+    ax.set_ylabel(right_label)
+    sm = plt.cm.ScalarMappable(cmap=cmap, norm=norm)
+    sm.set_array([])
+    fig.colorbar(
+        sm,
+        ax=ax,
+        label="Percentage of outcomes",
+        ticks=levels,
+        format=PercentFormatter(xmax=100, decimals=1),
+    )
+    fig.tight_layout()
     return fig
 
 
@@ -523,12 +570,11 @@ def render_stat_histograms(
         )
 
     st.markdown(f"**{left_player} {left_stat} vs. {right_player} {right_stat}**")
-    st.plotly_chart(
-        build_scatter(
+    st.pyplot(
+        build_stat_heatmap(
             left_series, right_series, selected_sims, f"{left_player} {left_stat}", f"{right_player} {right_stat}"
         ),
-        use_container_width=True,
-        key="stat_scatter",
+        width="stretch",
     )
 
     render_receptions_chart(game_players, selected_sims)

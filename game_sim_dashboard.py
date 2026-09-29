@@ -9,7 +9,6 @@ from __future__ import annotations
 import os
 import re
 import sys
-from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
 
@@ -19,15 +18,13 @@ import pandas as pd
 import streamlit as st
 
 from game_sim_fantasy import (
-    add_fantasy_points,
     fantasy_correlation_matrix,
     latest_player_row,
     prior_fill_values,
-    team_unit_rows,
 )
-from game_sim_worker import init_worker, serialize_players, simulate_chunk_task, simulate_task
+from game_sim_execution import prepare_game, run_prepared_games
 from project_paths import DEFAULT_SIMULATION_OUTPUT_DIR
-from torch_game_simulation_runtime import Game, Player, ROOF_TYPE, SKILL_SLOT_ORDER, SimulationRuntime, Team
+from torch_game_simulation_runtime import Player, ROOF_TYPE, SKILL_SLOT_ORDER, SimulationRuntime
 
 try:
     from streamlit.runtime.scriptrunner import get_script_run_ctx
@@ -411,118 +408,40 @@ def run_simulations(
     away_players: List[Player],
     simulations: int,
     workers: int = 1,
-    executor: Optional[ProcessPoolExecutor] = None,
+    backend: str = "Local",
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
     home_team = str(game_row["home_team"])
     away_team = str(game_row["away_team"])
     roof = ROOF_TYPE.get(home_team, "outdoors")
 
-    game_rows: List[Dict[str, object]] = []
-    player_rows: List[Dict[str, object]] = []
     progress = st.progress(0.0, text=f"Simulating {away_team} @ {home_team}...")
 
-    last_reported = 0
-    update_step = max(1, simulations // 40)
+    prepared = prepare_game(
+        runtime,
+        game_row,
+        team_features,
+        home_players,
+        away_players,
+        simulations,
+        roof,
+    )
 
-    def note(completed: int) -> None:
-        nonlocal last_reported
-        if completed == simulations or (completed - last_reported) >= update_step:
-            progress.progress(completed / simulations, text=f"Simulation {completed} of {simulations}")
-            last_reported = completed
+    def note(completed: int, total: int) -> None:
+        progress.progress(completed / total, text=f"Simulation {completed} of {total}")
 
-    if workers > 1 and simulations > 1:
-        task_template = {
-            "data_dir": str(runtime.data_dir),
-            "home_team": home_team,
-            "away_team": away_team,
-            "roof": roof,
-            "home_players": serialize_players(home_players),
-            "away_players": serialize_players(away_players),
-            "team_features": {
-                home_team: team_features.loc[home_team].to_dict(),
-                away_team: team_features.loc[away_team].to_dict(),
-            },
-        }
-
-        chunk_size = max(1, min(25, int(np.ceil(simulations / (workers * 4)))))
-        chunks: List[Tuple[int, int]] = []
-        curr = 1
-        while curr <= simulations:
-            cnt = min(chunk_size, simulations - curr + 1)
-            chunks.append((curr, cnt))
-            curr += cnt
-
-        def _run_pool(exec_pool: ProcessPoolExecutor) -> None:
-            futures = [
-                exec_pool.submit(
-                    simulate_chunk_task,
-                    {**task_template, "start_simulation": start_idx, "count": cnt},
-                )
-                for start_idx, cnt in chunks
-            ]
-            completed_total = 0
-            for future in as_completed(futures):
-                result = future.result()
-                game_rows.extend(result["game_rows"])
-                player_rows.extend(result["player_rows"])
-                completed_total += result["completed_count"]
-                note(completed_total)
-
-        if executor is not None:
-            _run_pool(executor)
-        else:
-            with ProcessPoolExecutor(
-                max_workers=workers, initializer=init_worker, initargs=(str(runtime.data_dir),)
-            ) as local_executor:
-                _run_pool(local_executor)
-
-        game_rows.sort(key=lambda row: int(row["simulation"]))
-        player_rows.sort(key=lambda row: (int(row["simulation"]), str(row["team"]), str(row["player_name"])))
-    else:
-        for index in range(simulations):
-            runtime.reset_nan_input_log()
-            away = Team(away_team, clone_players(away_players), "away", team_features.loc[away_team], runtime)
-            home = Team(home_team, clone_players(home_players), "home", team_features.loc[home_team], runtime)
-            Game(away, home, roof, runtime).simulate_game()
-
-            game_rows.append(
-                {
-                    "simulation": index + 1,
-                    "home_team": home_team,
-                    "away_team": away_team,
-                    "home_score": home.score,
-                    "away_score": away.score,
-                    "total": home.score + away.score,
-                    "spread": home.score - away.score,
-                }
-            )
-            for team in (home, away):
-                for player in team.players:
-                    row: Dict[str, object] = {
-                        "simulation": index + 1,
-                        "team": team.name,
-                        "player_name": player.name,
-                        "player_id": player.player_id,
-                        "position": player.position,
-                    }
-                    row.update(player.stats)
-                    player_rows.append(row)
-                player_rows.extend(team_unit_rows(team, index + 1))
-            note(index + 1)
-
-    progress.empty()
-
-    game_frame = pd.DataFrame(game_rows)
-    player_frame = add_fantasy_points(pd.DataFrame(player_rows))
-    for frame in (game_frame, player_frame):
-        frame.insert(0, "game_id", str(game_row["game_id"]))
-        frame.insert(1, "week", int(game_row["week"]))
-    return game_frame, player_frame
-
-
-def clone_players(players: List[Player]) -> List[Player]:
-    """Fresh Player objects per simulation so stat dictionaries do not accumulate."""
-    return [Player(p.name, p.position, p.player_id, p.attributes) for p in players]
+    try:
+        results = run_prepared_games(
+            [prepared],
+            backend,
+            workers,
+            runtime.data_dir,
+            progress=note,
+            modal_app_name=os.environ.get("MODAL_GAME_SIM_APP", "nfl-game-sim"),
+            modal_environment=os.environ.get("MODAL_ENVIRONMENT"),
+        )
+        return results[prepared.game_id]
+    finally:
+        progress.empty()
 
 
 def summarize_games(game_frame: pd.DataFrame) -> pd.DataFrame:
@@ -601,6 +520,7 @@ def simulate_week(
     simulations: int,
     workers: int,
     target_dir: Path,
+    backend: str = "Local",
 ) -> None:
     """Simulate every game on the week's schedule with default depth charts, no player overrides."""
     try:
@@ -611,86 +531,102 @@ def simulate_week(
 
     total_games = len(week_games)
     overall_progress = st.progress(0.0, text="Starting week simulation...")
-    game_frames: List[pd.DataFrame] = []
-    player_frames: List[pd.DataFrame] = []
+    prepared_games = []
     failures: List[str] = []
 
-    def _execute_all(executor: Optional[ProcessPoolExecutor]) -> None:
-        for position, (_, game_row) in enumerate(week_games.iterrows(), start=1):
-            game_id = str(game_row["game_id"])
-            home_team = str(game_row["home_team"])
-            away_team = str(game_row["away_team"])
-            overall_progress.progress(
-                (position - 1) / total_games,
-                text=f"Game {position}/{total_games}: {away_team} @ {home_team}",
+    for position, (_, game_row) in enumerate(week_games.iterrows(), start=1):
+        game_id = str(game_row["game_id"])
+        home_team = str(game_row["home_team"])
+        away_team = str(game_row["away_team"])
+        overall_progress.progress(
+            0.0,
+            text=f"Preparing game {position}/{total_games}: {away_team} @ {home_team}",
+        )
+
+        try:
+            team_features = build_team_features(runtime, team_stats, game_row)
+        except ValueError as error:
+            failures.append(f"{game_id}: {error}")
+            continue
+
+        gameday = pd.Timestamp(game_row["gameday"])
+        assignments: Dict[str, Dict[str, str]] = {}
+        roster_weeks: Dict[str, pd.DataFrame] = {}
+        missing_roster = False
+        for team in (away_team, home_team):
+            roster_week = roster_for_team_week(rosters, team, week)
+            if roster_week.empty:
+                failures.append(f"{game_id}: no roster rows for {team}")
+                missing_roster = True
+                break
+            roster_weeks[team] = roster_week
+            order = depth_chart_order(depth_charts, roster_week, team, gameday)
+            assignments[team] = build_slot_assignments(
+                order, player_stats, gameday, use_model_rank, fill_values
             )
+        if missing_roster:
+            continue
 
-            try:
-                team_features = build_team_features(runtime, team_stats, game_row)
-            except ValueError as error:
-                failures.append(f"{game_id}: {error}")
-                continue
+        name_lookup: Dict[str, str] = {}
+        for roster_week in roster_weeks.values():
+            name_lookup.update(dict(zip(roster_week["player_id"], roster_week["player_name"])))
 
-            gameday = pd.Timestamp(game_row["gameday"])
-            assignments: Dict[str, Dict[str, str]] = {}
-            roster_weeks: Dict[str, pd.DataFrame] = {}
-            missing_roster = False
-            for team in (away_team, home_team):
-                roster_week = roster_for_team_week(rosters, team, week)
-                if roster_week.empty:
-                    failures.append(f"{game_id}: no roster rows for {team}")
-                    missing_roster = True
-                    break
-                roster_weeks[team] = roster_week
-                order = depth_chart_order(depth_charts, roster_week, team, gameday)
-                assignments[team] = build_slot_assignments(
-                    order, player_stats, gameday, use_model_rank, fill_values
-                )
-            if missing_roster:
-                continue
-
-            name_lookup: Dict[str, str] = {}
-            for roster_week in roster_weeks.values():
-                name_lookup.update(dict(zip(roster_week["player_id"], roster_week["player_name"])))
-
-            home_players = build_players(
-                runtime, player_stats, assignments[home_team], name_lookup, gameday, {}, fill_values
-            )
-            away_players = build_players(
-                runtime, player_stats, assignments[away_team], name_lookup, gameday, {}, fill_values
-            )
-
-            game_frame, player_frame = run_simulations(
+        home_players = build_players(
+            runtime, player_stats, assignments[home_team], name_lookup, gameday, {}, fill_values
+        )
+        away_players = build_players(
+            runtime, player_stats, assignments[away_team], name_lookup, gameday, {}, fill_values
+        )
+        prepared_games.append(
+            prepare_game(
                 runtime,
                 game_row,
                 team_features,
                 home_players,
                 away_players,
                 simulations,
-                workers,
-                executor=executor,
+                ROOF_TYPE.get(home_team, "outdoors"),
             )
-            stem = sanitize_stem(game_id)
-            game_frame.to_csv(target_dir / f"{stem}_games.csv", index=False)
-            player_frame.to_csv(target_dir / f"{stem}_players.csv", index=False)
-            game_frames.append(game_frame)
-            player_frames.append(player_frame)
-
-    if workers > 1 and simulations > 1:
-        with ProcessPoolExecutor(
-            max_workers=workers, initializer=init_worker, initargs=(str(runtime.data_dir),)
-        ) as shared_executor:
-            _execute_all(shared_executor)
-    else:
-        _execute_all(None)
-
-    overall_progress.empty()
+        )
 
     if failures:
         st.warning("Skipped games:\n" + "\n".join(failures))
-    if not game_frames:
+    if not prepared_games:
+        overall_progress.empty()
         st.error("No games were simulated.")
         return
+
+    def note(completed: int, total: int) -> None:
+        overall_progress.progress(
+            completed / total,
+            text=f"Completed {completed} of {total} simulations across {len(prepared_games)} games",
+        )
+
+    try:
+        results = run_prepared_games(
+            prepared_games,
+            backend,
+            workers,
+            runtime.data_dir,
+            progress=note,
+            modal_app_name=os.environ.get("MODAL_GAME_SIM_APP", "nfl-game-sim"),
+            modal_environment=os.environ.get("MODAL_ENVIRONMENT"),
+        )
+    except Exception as error:
+        st.error(f"{backend} simulation failed: {error}")
+        return
+    finally:
+        overall_progress.empty()
+
+    game_frames: List[pd.DataFrame] = []
+    player_frames: List[pd.DataFrame] = []
+    for prepared in prepared_games:
+        game_frame, player_frame = results[prepared.game_id]
+        stem = sanitize_stem(prepared.game_id)
+        game_frame.to_csv(target_dir / f"{stem}_games.csv", index=False)
+        player_frame.to_csv(target_dir / f"{stem}_players.csv", index=False)
+        game_frames.append(game_frame)
+        player_frames.append(player_frame)
 
     combined_games = pd.concat(game_frames, ignore_index=True)
     combined_players = pd.concat(player_frames, ignore_index=True)
@@ -706,7 +642,7 @@ def simulate_week(
 
 
 def build_synthetic_team_features(runtime: SimulationRuntime, rest_days: float = 7.0) -> pd.Series:
-    """Team features set to league-average values for all required inputs."""
+    """Team features set to replacement-level values for all required inputs."""
     cols = [c for c in runtime.required_team_feature_columns if c in runtime.team_stats_wide.columns]
     syn_features = runtime.team_stats_wide[cols].mean(numeric_only=True).copy()
     syn_features["days_rest"] = float(rest_days)
@@ -718,7 +654,7 @@ def build_synthetic_team_features(runtime: SimulationRuntime, rest_days: float =
 
 
 def build_synthetic_players(runtime: SimulationRuntime) -> List[Player]:
-    """Build 11 skill players (QB1, WR1-4, RB1-3, TE1-3) with league-average attributes."""
+    """Build 11 skill players (QB1, WR1-4, RB1-3, TE1-3) with replacement-level attributes."""
     syn_player_means = runtime.player_stats_wide[runtime.required_player_feature_columns].mean(numeric_only=True)
     syn_player_df = pd.DataFrame([syn_player_means.to_dict()])
     for col in runtime.required_player_feature_columns:
@@ -750,9 +686,10 @@ def simulate_synthetic_home_games(
     simulations: int,
     workers: int,
     target_dir: Path,
+    backend: str = "Local",
     teams: Optional[List[str]] = None,
 ) -> None:
-    """Simulate all teams at home against a synthetic opponent with league-average inputs."""
+    """Simulate all teams at home against a synthetic opponent with replacement-level inputs."""
     try:
         target_dir.mkdir(parents=True, exist_ok=True)
     except OSError as error:
@@ -768,8 +705,7 @@ def simulate_synthetic_home_games(
 
     total_teams = len(all_teams)
     overall_progress = st.progress(0.0, text="Starting synthetic opponent home simulations...")
-    game_frames: List[pd.DataFrame] = []
-    player_frames: List[pd.DataFrame] = []
+    prepared_games = []
     failures: List[str] = []
 
     syn_team_features = build_synthetic_team_features(runtime, rest_days=7.0)
@@ -782,91 +718,108 @@ def simulate_synthetic_home_games(
         else pd.Timestamp(f"{season}-09-15")
     )
 
-    def _execute_syn_all(executor: Optional[ProcessPoolExecutor]) -> None:
-        for index, home_team in enumerate(all_teams, start=1):
-            overall_progress.progress(
-                (index - 1) / total_teams,
-                text=f"Team {index}/{total_teams}: SYN @ {home_team} (Home vs Synthetic)",
-            )
-            game_id = f"{season}_{week:02d}_SYN_{home_team}"
+    for index, home_team in enumerate(all_teams, start=1):
+        overall_progress.progress(
+            0.0,
+            text=f"Preparing team {index}/{total_teams}: SYN @ {home_team}",
+        )
+        game_id = f"{season}_{week:02d}_SYN_{home_team}"
 
-            matching_games = week_sched[
-                (week_sched["home_team"] == home_team) | (week_sched["away_team"] == home_team)
-            ]
-            gameday = (
-                pd.Timestamp(matching_games.iloc[0]["gameday"])
-                if not matching_games.empty
-                else default_gameday
-            )
+        matching_games = week_sched[
+            (week_sched["home_team"] == home_team) | (week_sched["away_team"] == home_team)
+        ]
+        gameday = (
+            pd.Timestamp(matching_games.iloc[0]["gameday"])
+            if not matching_games.empty
+            else default_gameday
+        )
 
-            try:
-                home_feature_row = team_feature_snapshot(team_stats, home_team, gameday).copy()
-            except ValueError as error:
-                failures.append(f"{home_team}: {error}")
-                continue
+        try:
+            home_feature_row = team_feature_snapshot(team_stats, home_team, gameday).copy()
+        except ValueError as error:
+            failures.append(f"{home_team}: {error}")
+            continue
 
-            history_rest = derive_rest_days(team_stats, home_team, gameday)
-            home_rest = min(history_rest, MAX_REST_DAYS) if pd.notna(history_rest) else 7.0
-            home_feature_row["days_rest"] = home_rest
-            home_feature_row["opp_days_rest"] = 7.0
+        history_rest = derive_rest_days(team_stats, home_team, gameday)
+        home_rest = min(history_rest, MAX_REST_DAYS) if pd.notna(history_rest) else 7.0
+        home_feature_row["days_rest"] = home_rest
+        home_feature_row["opp_days_rest"] = 7.0
 
-            team_features = pd.DataFrame(
-                [home_feature_row, syn_team_features], index=[home_team, "SYN"]
-            ).reindex(columns=runtime.required_team_feature_columns)
+        team_features = pd.DataFrame(
+            [home_feature_row, syn_team_features], index=[home_team, "SYN"]
+        ).reindex(columns=runtime.required_team_feature_columns)
 
-            roster_week = roster_for_team_week(rosters, home_team, week)
-            if roster_week.empty:
-                failures.append(f"{home_team}: no roster rows found for week {week}")
-                continue
+        roster_week = roster_for_team_week(rosters, home_team, week)
+        if roster_week.empty:
+            failures.append(f"{home_team}: no roster rows found for week {week}")
+            continue
 
-            name_lookup = dict(zip(roster_week["player_id"], roster_week["player_name"]))
-            order = depth_chart_order(depth_charts, roster_week, home_team, gameday)
-            assignments = build_slot_assignments(order, player_stats, gameday, use_model_rank, fill_values)
-            home_players = build_players(
-                runtime, player_stats, assignments, name_lookup, gameday, {}, fill_values
-            )
+        name_lookup = dict(zip(roster_week["player_id"], roster_week["player_name"]))
+        order = depth_chart_order(depth_charts, roster_week, home_team, gameday)
+        assignments = build_slot_assignments(order, player_stats, gameday, use_model_rank, fill_values)
+        home_players = build_players(
+            runtime, player_stats, assignments, name_lookup, gameday, {}, fill_values
+        )
 
-            game_row = pd.Series(
-                {
-                    "game_id": game_id,
-                    "week": int(week),
-                    "home_team": home_team,
-                    "away_team": "SYN",
-                    "gameday": gameday,
-                }
-            )
-
-            game_frame, player_frame = run_simulations(
+        game_row = pd.Series(
+            {
+                "game_id": game_id,
+                "week": int(week),
+                "home_team": home_team,
+                "away_team": "SYN",
+                "gameday": gameday,
+            }
+        )
+        prepared_games.append(
+            prepare_game(
                 runtime,
                 game_row,
                 team_features,
                 home_players,
                 syn_players,
                 simulations,
-                workers,
-                executor=executor,
+                ROOF_TYPE.get(home_team, "outdoors"),
             )
-            stem = sanitize_stem(game_id)
-            game_frame.to_csv(target_dir / f"{stem}_games.csv", index=False)
-            player_frame.to_csv(target_dir / f"{stem}_players.csv", index=False)
-            game_frames.append(game_frame)
-            player_frames.append(player_frame)
-
-    if workers > 1 and simulations > 1:
-        with ProcessPoolExecutor(
-            max_workers=workers, initializer=init_worker, initargs=(str(runtime.data_dir),)
-        ) as shared_executor:
-            _execute_syn_all(shared_executor)
-    else:
-        _execute_syn_all(None)
-
-    overall_progress.empty()
+        )
 
     if failures:
         st.warning("Skipped teams:\n" + "\n".join(failures))
-    if not game_frames:
+    if not prepared_games:
+        overall_progress.empty()
         st.error("No games were simulated.")
         return
+
+    def note(completed: int, total: int) -> None:
+        overall_progress.progress(
+            completed / total,
+            text=f"Completed {completed} of {total} simulations across {len(prepared_games)} teams",
+        )
+
+    try:
+        results = run_prepared_games(
+            prepared_games,
+            backend,
+            workers,
+            runtime.data_dir,
+            progress=note,
+            modal_app_name=os.environ.get("MODAL_GAME_SIM_APP", "nfl-game-sim"),
+            modal_environment=os.environ.get("MODAL_ENVIRONMENT"),
+        )
+    except Exception as error:
+        st.error(f"{backend} simulation failed: {error}")
+        return
+    finally:
+        overall_progress.empty()
+
+    game_frames: List[pd.DataFrame] = []
+    player_frames: List[pd.DataFrame] = []
+    for prepared in prepared_games:
+        game_frame, player_frame = results[prepared.game_id]
+        stem = sanitize_stem(prepared.game_id)
+        game_frame.to_csv(target_dir / f"{stem}_games.csv", index=False)
+        player_frame.to_csv(target_dir / f"{stem}_players.csv", index=False)
+        game_frames.append(game_frame)
+        player_frames.append(player_frame)
 
     combined_games = pd.concat(game_frames, ignore_index=True)
     combined_players = pd.concat(player_frames, ignore_index=True)
@@ -982,23 +935,41 @@ def main() -> None:
     render_player_editor(runtime, player_stats, name_lookup, selection, gameday, str(game_id), fill_values)
 
     st.subheader("Run")
-    run_columns = st.columns([1, 1, 2, 2])
+    run_columns = st.columns([1, 1, 1, 2, 2])
     simulations = run_columns[0].number_input("Simulations", min_value=1, max_value=10000, value=200, step=25)
-    workers = run_columns[1].number_input("Workers", min_value=1, max_value=6, value=1, step=1)
-    output_dir = run_columns[2].text_input("Output folder", value=str(WORKSPACE_DIR))
-    stem = run_columns[3].text_input("File name", value=f"{game_id}_sim")
+    backend = run_columns[1].selectbox("Backend", ["Local", "Modal"], key="single_backend")
+    parallel_label = "Workers" if backend == "Local" else "Max containers"
+    workers = run_columns[2].number_input(
+        parallel_label,
+        min_value=1,
+        max_value=6 if backend == "Local" else 32,
+        value=1 if backend == "Local" else 8,
+        step=1,
+        key=f"single_parallelism_{backend.lower()}",
+    )
+    output_dir = run_columns[3].text_input("Output folder", value=str(WORKSPACE_DIR))
+    stem = run_columns[4].text_input("File name", value=f"{game_id}_sim")
     append = st.checkbox("Append to existing files", value=False)
     st.caption(
-        "Roughly 5 seconds per simulation per worker; each worker loads its own copy of the models."
+        "Local workers and Modal containers each load one model runtime. Modal results return here and are written locally."
     )
 
     st.subheader("Simulate entire week")
-    week_columns = st.columns([1, 1, 2])
+    week_columns = st.columns([1, 1, 1, 2])
     week_simulations = week_columns[0].number_input(
         "Simulations per game", min_value=1, max_value=10000, value=200, step=25, key="week_simulations"
     )
-    week_workers = week_columns[1].number_input("Workers", min_value=1, max_value=6, value=1, step=1, key="week_workers")
-    week_output_dir = week_columns[2].text_input(
+    week_backend = week_columns[1].selectbox("Backend", ["Local", "Modal"], key="week_backend")
+    week_parallel_label = "Workers" if week_backend == "Local" else "Max containers"
+    week_workers = week_columns[2].number_input(
+        week_parallel_label,
+        min_value=1,
+        max_value=6 if week_backend == "Local" else 32,
+        value=1 if week_backend == "Local" else 16,
+        step=1,
+        key=f"week_parallelism_{week_backend.lower()}",
+    )
+    week_output_dir = week_columns[3].text_input(
         "Week output folder", value=str(WORKSPACE_DIR / f"week_{int(week):02d}"), key="week_output_dir"
     )
     st.caption(
@@ -1019,23 +990,31 @@ def main() -> None:
             int(week_simulations),
             int(week_workers),
             Path(week_output_dir).expanduser(),
+            week_backend,
         )
 
     st.subheader("Simulate all teams vs. synthetic opponent (Home)")
-    syn_columns = st.columns([1, 1, 2])
+    syn_columns = st.columns([1, 1, 1, 2])
     syn_simulations = syn_columns[0].number_input(
         "Simulations per team", min_value=1, max_value=10000, value=200, step=25, key="syn_simulations"
     )
-    syn_workers = syn_columns[1].number_input(
-        "Workers", min_value=1, max_value=6, value=1, step=1, key="syn_workers"
+    syn_backend = syn_columns[1].selectbox("Backend", ["Local", "Modal"], key="syn_backend")
+    syn_parallel_label = "Workers" if syn_backend == "Local" else "Max containers"
+    syn_workers = syn_columns[2].number_input(
+        syn_parallel_label,
+        min_value=1,
+        max_value=6 if syn_backend == "Local" else 32,
+        value=1 if syn_backend == "Local" else 16,
+        step=1,
+        key=f"syn_parallelism_{syn_backend.lower()}",
     )
-    syn_output_dir = syn_columns[2].text_input(
+    syn_output_dir = syn_columns[3].text_input(
         "Synthetic output folder",
         value=str(WORKSPACE_DIR / f"synthetic_home_week_{int(week):02d}"),
         key="syn_output_dir",
     )
     st.caption(
-        "Simulates all 32 NFL teams hosting a synthetic opponent with league-average values for all team "
+        "Simulates all 32 NFL teams hosting a synthetic opponent with replacement-level values for all team "
         "and player inputs in their home stadiums, isolating true team strength and player outputs."
     )
     if st.button("Simulate all teams at home vs. synthetic opponent", type="primary", key="btn_syn_all"):
@@ -1053,6 +1032,7 @@ def main() -> None:
             int(syn_simulations),
             int(syn_workers),
             Path(syn_output_dir).expanduser(),
+            syn_backend,
         )
 
     if not st.button("Run simulations", type="primary"):
@@ -1073,9 +1053,20 @@ def main() -> None:
         runtime, player_stats, assignments[away_team], name_lookup, gameday, overrides, fill_values
     )
 
-    game_frame, player_frame = run_simulations(
-        runtime, game_row, team_features, home_players, away_players, int(simulations), int(workers)
-    )
+    try:
+        game_frame, player_frame = run_simulations(
+            runtime,
+            game_row,
+            team_features,
+            home_players,
+            away_players,
+            int(simulations),
+            int(workers),
+            backend,
+        )
+    except Exception as error:
+        st.error(f"{backend} simulation failed: {error}")
+        return
 
     safe_stem = sanitize_stem(stem)
     if append:

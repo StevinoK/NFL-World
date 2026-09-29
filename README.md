@@ -47,6 +47,58 @@ python run_feature_dashboard.py
 
 Simulation output defaults to `outputs/simulations/` in the repository and is intentionally ignored by Git.
 
+## Modal Game Simulations
+
+The game simulation dashboard can execute simulation chunks locally or on Modal. Input preparation, result validation, fantasy scoring, summaries, and CSV writes remain local. Modal only runs the CPU-bound simulation chunks.
+
+Authenticate the Modal client once:
+
+```powershell
+modal setup
+```
+
+Validate and upload the current runtime bundle to the named Modal Volume, then deploy the worker app:
+
+```powershell
+python check_runtime_artifacts.py
+python sync_modal_artifacts.py
+modal deploy modal_game_sim.py
+```
+
+The defaults are app `nfl-game-sim`, function `simulate_chunk`, and Volume `nfl-game-sim-artifacts`. To use another Modal environment or app name, set these before deploying and launching the dashboard:
+
+```powershell
+$env:MODAL_ENVIRONMENT = 'main'
+$env:MODAL_GAME_SIM_APP = 'nfl-game-sim'
+$env:MODAL_ARTIFACT_VOLUME = 'nfl-game-sim-artifacts'
+```
+
+`MODAL_ARTIFACT_VOLUME` is read during deployment and artifact synchronization. Pass matching overrides to the uploader when needed:
+
+```powershell
+python sync_modal_artifacts.py --volume nfl-game-sim-artifacts --environment main
+modal deploy modal_game_sim.py --env main
+```
+
+Whenever files in `artifacts/runtime/` change, run the sync command and then redeploy the app. Redeployment replaces warm containers that may still hold the previous runtime in memory.
+
+In the game simulation dashboard, select `Modal` independently for a single game, full week, or synthetic-opponent slate. `Max containers` limits cloud parallelism and cost; start with 8 for a game and 16 for a slate. Modal failures are reported without automatically rerunning locally. Select `Local` explicitly to use the process pool instead.
+
+Useful operational commands:
+
+```powershell
+modal volume ls nfl-game-sim-artifacts /runtime
+modal app logs nfl-game-sim
+```
+
+The existing results dashboard needs no Modal configuration because all result CSVs are still written to the selected local output folder.
+
+Run orchestration tests without cloud credentials or model loading:
+
+```powershell
+python -m unittest tests.test_game_sim_execution
+```
+
 ## Routine Sync
 
 Before starting work on either computer:

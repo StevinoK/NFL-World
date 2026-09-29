@@ -159,6 +159,8 @@ def simulate_chunk_task(task: Dict[str, object]) -> Dict[str, object]:
             player_rows.extend(team_unit_rows(team, sim_idx))
 
     return {
+        "game_id": str(task["game_id"]),
+        "week": int(task["week"]),
         "game_rows": game_rows,
         "player_rows": player_rows,
         "completed_count": count,

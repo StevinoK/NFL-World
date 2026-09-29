@@ -149,7 +149,7 @@ def render_spread_violins(
     ax.set_xticklabels(order, rotation=90, fontsize=9)
     ax.set_ylabel("Point spread vs. synthetic opponent (home margin)")
     ax.set_title(
-        f"Simulated Point Spread vs. League-Average Opponent (home) — middle {100 * (1 - 2 * trim):.0f}%"
+        f"Simulated Point Spread vs. Replacement-Level Opponent (home) — middle {100 * (1 - 2 * trim):.0f}%"
     )
     ax.grid(axis="y", alpha=0.25, linewidth=0.6)
     fig.tight_layout()
@@ -204,7 +204,7 @@ def render_points_grid(games: pd.DataFrame, styles: pd.DataFrame, out_path: Path
     ax.invert_yaxis()
     ax.set_xlabel("Average points scored vs. synthetic opponent")
     ax.set_ylabel("Average points allowed to synthetic opponent")
-    ax.set_title("Offense vs. Defense against a League-Average Opponent")
+    ax.set_title("Offense vs. Defense against a Replacement-Level Opponent")
     ax.grid(alpha=0.25, linewidth=0.6)
     fig.tight_layout()
     fig.savefig(out_path, dpi=150)
@@ -274,7 +274,7 @@ def render_scorigami_grid(games: pd.DataFrame, out_path: Path, columns: int = 8)
 
     fig.supxlabel("Team points", fontsize=11)
     fig.supylabel("Synthetic opponent points", fontsize=11)
-    fig.suptitle("Simulated Score Distributions vs. a League-Average Opponent", fontsize=13)
+    fig.suptitle("Simulated Score Distributions vs. a Replacement-Level Opponent", fontsize=13)
     fig.tight_layout(rect=(0.01, 0.01, 1.0, 0.97))
     fig.savefig(out_path, dpi=150)
     plt.close(fig)
@@ -288,7 +288,120 @@ def embed(path: Path) -> str:
     return base64.b64encode(path.read_bytes()).decode("ascii")
 
 
-def write_html(paths: Dict[str, Path], summary: pd.DataFrame, out_path: Path) -> Path:
+def logo_data_uri(styles: pd.DataFrame, team: str) -> Optional[str]:
+    url = style_for(styles, team).get("team_logo_espn")
+    if logo_image(url, team) is None:
+        return None
+    cached = LOGO_CACHE_DIR / f"{team}.png"
+    return f"data:image/png;base64,{embed(cached)}"
+
+
+TABLE_CSS = """
+table.summary { border-collapse: separate; border-spacing: 0; font-size: 13px; width: 100%;
+  max-width: 1200px; background: #fff; border: 1px solid #e4e4e4; border-radius: 8px; overflow: hidden; }
+table.summary th { font-size: 11px; letter-spacing: .04em; text-transform: uppercase; color: #5a5a5a;
+  background: #f5f5f4; padding: 9px 10px; text-align: right; border-bottom: 1px solid #e0e0e0; white-space: nowrap; }
+table.summary td { padding: 7px 10px; border-bottom: 1px solid #f0f0f0; vertical-align: middle; }
+table.summary tbody tr:hover { background: color-mix(in srgb, var(--team) 9%, #fff); }
+table.summary tbody tr:last-child td { border-bottom: none; }
+
+td.rank, th.rank { text-align: right; color: #9a9a9a; font-variant-numeric: tabular-nums; width: 34px; }
+td.team, th.team { text-align: left; }
+td.team { border-left: 4px solid var(--team); font-weight: 600; white-space: nowrap; }
+td.team .logo { width: 20px; height: 20px; object-fit: contain; border: none; border-radius: 0;
+  vertical-align: middle; margin-right: 7px; }
+td.team .logo.placeholder { display: inline-block; background: var(--team2); border-radius: 50%; }
+td.team .abbr { vertical-align: middle; }
+
+td.num { text-align: right; font-variant-numeric: tabular-nums; min-width: 92px; }
+td.num.plain { color: #666; }
+td.num .val { display: block; font-size: 12px; line-height: 1.1; margin-bottom: 3px; }
+td.num .track { position: relative; display: block; height: 6px; border-radius: 3px; background: #efefee; }
+td.num .bar { position: absolute; top: 0; height: 100%; border-radius: 3px; opacity: .85; }
+td.num .zero { position: absolute; left: 50%; top: -1px; width: 1px; height: calc(100% + 2px); background: #c4c4c4; }
+"""
+
+# Columns rendered with an in-cell bar: label, format, and bar mode.
+SUMMARY_COLUMNS: List[Tuple[str, str, str]] = [
+    ("sims", "Sims", "plain"),
+    ("points_for", "Points For", "positive"),
+    ("points_against", "Points Against", "positive"),
+    ("median_spread", "Median Spread", "diverging"),
+    ("mean_spread", "Mean Spread", "diverging"),
+    ("spread_stdev", "Spread SD", "positive"),
+    ("median_total", "Median Total", "positive"),
+    ("win_prob", "Win Prob", "percent"),
+]
+
+
+def _bar_cell(value: float, mode: str, lo: float, hi: float, color: str) -> str:
+    """Datawrapper-style cell: numeric label above a proportional bar."""
+    if mode == "percent":
+        text = f"{value * 100:.1f}%"
+    elif mode == "plain":
+        return f'<td class="num plain">{value:,.0f}</td>'
+    else:
+        text = f"{value:.2f}"
+
+    span = max(hi - lo, 1e-9)
+    if mode == "diverging":
+        extent = max(abs(lo), abs(hi), 1e-9)
+        frac = min(abs(value) / extent, 1.0) * 50.0
+        left, width = (50.0 - frac, frac) if value < 0 else (50.0, frac)
+        bar = (
+            f'<span class="bar" style="left:{left:.2f}%;width:{width:.2f}%;background:{color};"></span>'
+            '<span class="zero"></span>'
+        )
+    else:
+        frac = (value - lo) / span if mode != "percent" else value
+        width = min(max(frac, 0.0), 1.0) * 100.0
+        bar = f'<span class="bar" style="left:0;width:{width:.2f}%;background:{color};"></span>'
+    return f'<td class="num"><span class="val">{text}</span><span class="track">{bar}</span></td>'
+
+
+def summary_table_html(summary: pd.DataFrame, styles: pd.DataFrame) -> str:
+    ranges = {
+        key: (float(summary[key].min()), float(summary[key].max()))
+        for key, _, _ in SUMMARY_COLUMNS
+        if key in summary.columns
+    }
+    header = "".join(
+        f"<th>{label}</th>" for key, label, _ in SUMMARY_COLUMNS if key in ranges
+    )
+
+    rows = []
+    for rank, row in enumerate(summary.itertuples(index=False), start=1):
+        team = getattr(row, "team")
+        style = style_for(styles, team)
+        primary = style.get("team_color") or "#666666"
+        secondary = style.get("team_color2") or "#222222"
+        logo = logo_data_uri(styles, team)
+        badge = (
+            f'<img class="logo" src="{logo}" alt="{team}" />'
+            if logo
+            else '<span class="logo placeholder"></span>'
+        )
+        cells = "".join(
+            _bar_cell(float(getattr(row, key)), mode, *ranges[key], primary)
+            for key, _, mode in SUMMARY_COLUMNS
+            if key in ranges
+        )
+        rows.append(
+            f'<tr style="--team:{primary};--team2:{secondary};">'
+            f'<td class="rank">{rank}</td>'
+            f'<td class="team">{badge}<span class="abbr">{team}</span></td>'
+            f"{cells}</tr>"
+        )
+
+    return (
+        '<table class="summary"><thead><tr><th class="rank">#</th><th class="team">Team</th>'
+        f"{header}</tr></thead><tbody>" + "".join(rows) + "</tbody></table>"
+    )
+
+
+def write_html(
+    paths: Dict[str, Path], summary: pd.DataFrame, styles: pd.DataFrame, out_path: Path
+) -> Path:
     sections = "\n".join(
         f'<h2>{title}</h2><img src="data:image/png;base64,{embed(path)}" />'
         for title, path in paths.items()
@@ -296,20 +409,68 @@ def write_html(paths: Dict[str, Path], summary: pd.DataFrame, out_path: Path) ->
     html = f"""<!doctype html>
 <html><head><meta charset="utf-8"><title>Synthetic Opponent Simulation Report</title>
 <style>
-body {{ font-family: Segoe UI, Arial, sans-serif; margin: 28px; color: #1c1c1c; }}
+body {{ font-family: Segoe UI, Arial, sans-serif; margin: 28px; color: #1c1c1c; background: #fbfbfa; }}
 img {{ max-width: 100%; border: 1px solid #ddd; border-radius: 6px; }}
-table {{ border-collapse: collapse; font-size: 13px; }}
-th, td {{ border: 1px solid #ddd; padding: 4px 8px; text-align: right; }}
-th {{ background: #f3f3f3; }}
-td:first-child, th:first-child {{ text-align: left; }}
+{TABLE_CSS}
 </style></head>
 <body>
 <h1>Synthetic Opponent Simulation Report</h1>
 {sections}
 <h2>Team Summary</h2>
-{summary.to_html(index=False, float_format=lambda v: f"{v:.2f}")}
+{summary_table_html(summary, styles)}
 </body></html>"""
     out_path.write_text(html, encoding="utf-8")
+    return out_path
+
+
+def write_table_html(
+    summary: pd.DataFrame,
+    styles: pd.DataFrame,
+    out_path: Path,
+    title: str = "Simulated Team Strength vs. a Replacement-Level Opponent",
+) -> Path:
+    """Standalone, self-contained table page (logos inlined) for embedding elsewhere."""
+    html = f"""<!doctype html>
+<html><head><meta charset="utf-8"><title>{title}</title>
+<style>
+body {{ font-family: Segoe UI, Arial, sans-serif; margin: 0; padding: 20px; color: #1c1c1c;
+  background: #fff; display: inline-block; }}
+h2.table-title {{ font-size: 18px; margin: 0 0 4px; }}
+p.table-sub {{ font-size: 12px; color: #777; margin: 0 0 12px; }}
+{TABLE_CSS}
+</style></head>
+<body>
+<h2 class="table-title">{title}</h2>
+<p class="table-sub">Each team simulated at home against an identical synthetic opponent.</p>
+{summary_table_html(summary, styles)}
+</body></html>"""
+    out_path.write_text(html, encoding="utf-8")
+    return out_path
+
+
+def export_table_png(html_path: Path, out_path: Path, scale: int = 2) -> Optional[Path]:
+    """Screenshot the standalone table with Playwright; returns None when it is unavailable."""
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError:
+        print(
+            "Playwright not installed; skipping table PNG "
+            "(pip install playwright && playwright install chromium)."
+        )
+        return None
+
+    try:
+        with sync_playwright() as play:
+            browser = play.chromium.launch()
+            page = browser.new_page(
+                viewport={"width": 1400, "height": 1000}, device_scale_factor=scale
+            )
+            page.goto(html_path.resolve().as_uri())
+            page.locator("body").screenshot(path=str(out_path))
+            browser.close()
+    except Exception as exc:  # missing browser binaries, render failure, etc.
+        print(f"Table PNG export failed: {exc}")
+        return None
     return out_path
 
 
@@ -335,7 +496,9 @@ def team_summary(games: pd.DataFrame) -> pd.DataFrame:
 # ------------------------------------------------------------------- driver
 
 
-def build_report(folder: Path, out_dir: Optional[Path] = None) -> Path:
+def build_report(
+    folder: Path, out_dir: Optional[Path] = None, table_png: bool = True
+) -> Path:
     games = load_games(folder)
     styles = team_style()
     target = out_dir or folder
@@ -354,8 +517,14 @@ def build_report(folder: Path, out_dir: Optional[Path] = None) -> Path:
     }
     summary = team_summary(games)
     summary.to_csv(target / "synthetic_report_summary.csv", index=False)
-    report = write_html(paths, summary, target / "synthetic_report.html")
+    report = write_html(paths, summary, styles, target / "synthetic_report.html")
+    table_html = write_table_html(summary, styles, target / "synthetic_summary_table.html")
     print(f"Wrote {report}")
+    print(f"Wrote {table_html}")
+    if table_png:
+        png = export_table_png(table_html, target / "synthetic_summary_table.png")
+        if png:
+            print(f"Wrote {png}")
     for path in paths.values():
         print(f"Wrote {path}")
     return report
@@ -370,9 +539,18 @@ def parse_args() -> argparse.Namespace:
         help="Folder containing the synthetic simulation CSVs.",
     )
     parser.add_argument("--out-dir", type=Path, default=None, help="Where to write the report (defaults to --folder).")
+    parser.add_argument(
+        "--no-table-png",
+        action="store_true",
+        help="Skip the Playwright screenshot of the standalone summary table.",
+    )
     return parser.parse_args()
 
 
 if __name__ == "__main__":
     args = parse_args()
-    build_report(args.folder.expanduser(), args.out_dir.expanduser() if args.out_dir else None)
+    build_report(
+        args.folder.expanduser(),
+        args.out_dir.expanduser() if args.out_dir else None,
+        table_png=not args.no_table_png,
+    )
