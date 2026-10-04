@@ -31,7 +31,6 @@ from game_sim_dashboard import (
     build_players,
     build_slot_assignments,
     depth_chart_order,
-    derive_rest_days,
     load_depth_charts,
     load_rosters,
     load_schedule,
@@ -43,9 +42,10 @@ from game_sim_dashboard import (
 )
 from game_sim_fantasy import add_fantasy_points, fantasy_correlation_matrix, team_unit_rows
 from game_sim_worker import init_worker, serialize_players, simulate_chunk_task, simulate_task
+from project_paths import DEFAULT_SIMULATION_OUTPUT_DIR
 from torch_game_simulation_runtime import Game, Player, ROOF_TYPE, SKILL_SLOT_ORDER, SimulationRuntime, Team
 
-WORKSPACE_DIR = Path(r"C:\Users\steve\OneDrive\Desktop\Football\Modeling\Simulations")
+WORKSPACE_DIR = DEFAULT_SIMULATION_OUTPUT_DIR
 
 
 def build_synthetic_team_features(runtime: SimulationRuntime, rest_days: float = 7.0) -> pd.Series:
@@ -244,9 +244,7 @@ def run_all_teams_synthetic(
                 failures.append(f"{home_team}: {err}")
                 continue
 
-            history_rest = derive_rest_days(team_stats, home_team, gameday)
-            home_rest = min(history_rest, MAX_REST_DAYS) if pd.notna(history_rest) else 7.0
-            home_feature_row["days_rest"] = home_rest
+            home_feature_row["days_rest"] = 7.0
             home_feature_row["opp_days_rest"] = 7.0
 
             team_features = pd.DataFrame(
@@ -366,7 +364,7 @@ def parse_args() -> argparse.Namespace:
         "--output-dir",
         type=Path,
         default=None,
-        help="Custom output directory (default: Simulations/synthetic_home_week_<week>)",
+        help="Custom output directory (default: outputs/simulations/synthetic_home_week_<week>)",
     )
     parser.add_argument(
         "--ordering",

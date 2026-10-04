@@ -1,0 +1,62 @@
+{
+  "def_pass_epa_rate": {
+    "across_decay": 0.99,
+    "lambda_context": 1.0,
+    "lambda_defense": 100.0,
+    "lambda_offense_team": 300.0,
+    "lambda_position": 50.0,
+    "lambda_subject": 300.0,
+    "lambda_teammate": 300.0,
+    "lambda_venue": 1000.0,
+    "lookback_seasons": 1,
+    "season_carryover": 0.5,
+    "side": "defense",
+    "target": "pass_epa",
+    "within_decay": 0.9
+  },
+  "epa_rate": {
+    "across_decay": 0.99,
+    "lambda_context": 1.0,
+    "lambda_defense": 100.0,
+    "lambda_offense_team": 300.0,
+    "lambda_position": 50.0,
+    "lambda_subject": 300.0,
+    "lambda_teammate": 300.0,
+    "lambda_venue": 1000.0,
+    "lookback_seasons": 1,
+    "season_carryover": 0.5,
+    "side": "subject",
+    "target": "pass_epa",
+    "within_decay": 0.9
+  },
+  "yac_bayes": {
+    "across_decay": 0.99,
+    "lambda_context": 1.0,
+    "lambda_defense": 100.0,
+    "lambda_offense_team": 300.0,
+    "lambda_position": 50.0,
+    "lambda_subject": 30.0,
+    "lambda_teammate": 300.0,
+    "lambda_venue": 1000.0,
+    "lookback_seasons": 1,
+    "season_carryover": 0.5,
+    "side": "subject",
+    "target": "yac_oe",
+    "within_decay": 1.0
+  },
+  "yac_oe_allowed": {
+    "across_decay": 0.99,
+    "lambda_context": 1.0,
+    "lambda_defense": 100.0,
+    "lambda_offense_team": 300.0,
+    "lambda_position": 50.0,
+    "lambda_subject": 30.0,
+    "lambda_teammate": 300.0,
+    "lambda_venue": 1000.0,
+    "lookback_seasons": 1,
+    "season_carryover": 0.5,
+    "side": "defense",
+    "target": "yac_oe",
+    "within_decay": 0.9
+  }
+}

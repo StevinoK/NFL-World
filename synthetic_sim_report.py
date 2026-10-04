@@ -30,7 +30,9 @@ from PIL import Image
 from scipy.ndimage import gaussian_filter
 from scipy.stats import gaussian_kde
 
-WORKSPACE_DIR = Path(r"C:\Users\steve\OneDrive\Desktop\Football\Modeling\Simulations")
+from project_paths import DEFAULT_SIMULATION_OUTPUT_DIR
+
+WORKSPACE_DIR = DEFAULT_SIMULATION_OUTPUT_DIR
 LOGO_CACHE_DIR = Path(__file__).resolve().parent / ".team_logo_cache"
 RELIEF_EXAGGERATION = 15.0
 SCORIGAMI_CMAP = LinearSegmentedColormap.from_list(
@@ -535,7 +537,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--folder",
         type=Path,
-        default=WORKSPACE_DIR / "synthetic_home_week_01",
+        default=WORKSPACE_DIR / "synthetic_home_week_04",
         help="Folder containing the synthetic simulation CSVs.",
     )
     parser.add_argument("--out-dir", type=Path, default=None, help="Where to write the report (defaults to --folder).")

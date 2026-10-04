@@ -587,7 +587,16 @@ def main() -> None:
     st.set_page_config(page_title="Weekly Game Sim Results", layout="wide")
     st.title("Weekly Game Simulation Results")
 
-    folder = st.sidebar.text_input("Results folder", value=str(default_results_folder()))
+    default_folder = default_results_folder()
+    folder = st.sidebar.text_input("Results folder", value=str(default_folder))
+    selected_folder = Path(folder).expanduser()
+    if not selected_folder.exists() and selected_folder == default_folder:
+        st.info(
+            "No simulation results exist yet. Run the Weekly Game Simulator first; "
+            f"its output will appear in {default_folder}."
+        )
+        return
+
     try:
         games_df, players_df = load_week_results(folder)
     except FileNotFoundError as error:

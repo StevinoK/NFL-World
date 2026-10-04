@@ -1,0 +1,154 @@
+{
+  "historical_bakeoff_reference": {
+    "cpoe_bayes": {
+      "method": "rolling_window",
+      "rmse_ratio_vs_bayesian": 0.9307932357867396
+    },
+    "cpoe_deep": {
+      "method": "cumulative",
+      "rmse_ratio_vs_bayesian": 0.978324538596971
+    },
+    "cpoe_medium": {
+      "method": "cumulative",
+      "rmse_ratio_vs_bayesian": 0.93129769078947
+    },
+    "cpoe_short": {
+      "method": "cumulative",
+      "rmse_ratio_vs_bayesian": 0.9512699739410392
+    },
+    "deep_cpoe_allowed": {
+      "method": "cumulative",
+      "rmse_ratio_vs_bayesian": 1.0013988341408693
+    },
+    "def_pass_epa_rate": {
+      "method": "cumulative",
+      "rmse_ratio_vs_bayesian": 1.006200230264276
+    },
+    "def_rush_epa_rate": {
+      "method": "bayesian",
+      "rmse_ratio_vs_bayesian": 1.0
+    },
+    "epa_rate": {
+      "method": "bayesian",
+      "rmse_ratio_vs_bayesian": 1.0
+    },
+    "explosive_bayes": {
+      "method": "dynamic_beta",
+      "rmse_ratio_vs_bayesian": 1.001904336373929
+    },
+    "fd_bayes": {
+      "method": "logit_kalman",
+      "rmse_ratio_vs_bayesian": 0.9921528135331432
+    },
+    "int_rate": {
+      "method": "bayesian",
+      "rmse_ratio_vs_bayesian": 1.0
+    },
+    "medium_cpoe_allowed": {
+      "method": "cumulative",
+      "rmse_ratio_vs_bayesian": 1.0028156485646678
+    },
+    "qb_scramble_ypc_bayes": {
+      "method": "cumulative",
+      "rmse_ratio_vs_bayesian": 0.9924120127023568
+    },
+    "rush_yards_per_carry": {
+      "method": "cumulative",
+      "rmse_ratio_vs_bayesian": 1.0078892736379712
+    },
+    "rushing_epa_rate": {
+      "method": "bayesian",
+      "rmse_ratio_vs_bayesian": 1.0
+    },
+    "sack_bayes": {
+      "method": "cumulative",
+      "rmse_ratio_vs_bayesian": 1.0114199842430025
+    },
+    "sack_rate": {
+      "method": "cumulative",
+      "rmse_ratio_vs_bayesian": 1.00589517814336
+    },
+    "short_cpoe_allowed": {
+      "method": "cumulative",
+      "rmse_ratio_vs_bayesian": 1.0012022616098746
+    },
+    "turnover_bayes": {
+      "method": "bayesian",
+      "rmse_ratio_vs_bayesian": 1.0
+    },
+    "yac_bayes": {
+      "method": "cumulative",
+      "rmse_ratio_vs_bayesian": 0.9593735620771204
+    },
+    "yac_oe_allowed": {
+      "method": "cumulative",
+      "rmse_ratio_vs_bayesian": 1.0038214331705506
+    },
+    "ypc_bayes": {
+      "method": "cumulative",
+      "rmse_ratio_vs_bayesian": 0.9665929244108488
+    },
+    "ypt": {
+      "method": "cumulative",
+      "rmse_ratio_vs_bayesian": 0.9648072547216549
+    }
+  },
+  "methods": {
+    "bayesian": {
+      "mean_rmse_ratio_vs_bayesian": 1.0,
+      "median_exposure_rmse_ratio_vs_bayesian": 1.0,
+      "median_rmse_ratio_vs_bayesian": 1.0,
+      "outputs": 23,
+      "significant_losses": 0,
+      "significant_wins": 0,
+      "wins_vs_bayesian": 0
+    },
+    "ridge+teammate_full": {
+      "mean_rmse_ratio_vs_bayesian": 0.9591094579032919,
+      "median_exposure_rmse_ratio_vs_bayesian": 0.9501993298946181,
+      "median_rmse_ratio_vs_bayesian": 0.9575157784556149,
+      "outputs": 7,
+      "significant_losses": 0,
+      "significant_wins": 6,
+      "wins_vs_bayesian": 7
+    },
+    "ridge+teammate_neutral": {
+      "mean_rmse_ratio_vs_bayesian": 0.9620874928602953,
+      "median_exposure_rmse_ratio_vs_bayesian": 0.9528808229381426,
+      "median_rmse_ratio_vs_bayesian": 0.9616742809237471,
+      "outputs": 7,
+      "significant_losses": 0,
+      "significant_wins": 6,
+      "wins_vs_bayesian": 7
+    },
+    "ridge_full": {
+      "mean_rmse_ratio_vs_bayesian": 0.980933571538307,
+      "median_exposure_rmse_ratio_vs_bayesian": 0.9837481671336711,
+      "median_rmse_ratio_vs_bayesian": 0.9873678541768721,
+      "outputs": 23,
+      "significant_losses": 0,
+      "significant_wins": 11,
+      "wins_vs_bayesian": 20
+    },
+    "ridge_neutral": {
+      "mean_rmse_ratio_vs_bayesian": 1.0010002045298296,
+      "median_exposure_rmse_ratio_vs_bayesian": 0.9899313612028356,
+      "median_rmse_ratio_vs_bayesian": 0.9980721439292695,
+      "outputs": 23,
+      "significant_losses": 6,
+      "significant_wins": 8,
+      "wins_vs_bayesian": 14
+    }
+  },
+  "outputs": 23,
+  "validation_selected": {
+    "median_rmse_ratio_vs_bayesian": 0.987894818527119,
+    "method_counts": {
+      "ridge+teammate_full": 5,
+      "ridge_full": 16,
+      "ridge_neutral": 2
+    },
+    "significant_losses": 0,
+    "significant_wins": 10
+  }
+}

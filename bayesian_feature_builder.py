@@ -869,7 +869,7 @@ def _rolling_team_massey_rating(
                     "game_date": current_date,
                     "offense_rating": float(offense[team_idx]),
                     "defense_rating": float(defense[team_idx]),
-                    "rate": float(offense[team_idx] - defense[team_idx]),
+                    "rate": float(offense[team_idx] + defense[team_idx]),
                 })
 
     if not records:

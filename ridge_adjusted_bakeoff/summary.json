@@ -1,0 +1,175 @@
+{
+  "historical_bakeoff_reference": {
+    "cpoe_bayes": {
+      "method": "rolling_window",
+      "rmse_ratio_vs_bayesian": 0.9307932357867396
+    },
+    "cpoe_deep": {
+      "method": "cumulative",
+      "rmse_ratio_vs_bayesian": 0.978324538596971
+    },
+    "cpoe_medium": {
+      "method": "cumulative",
+      "rmse_ratio_vs_bayesian": 0.93129769078947
+    },
+    "cpoe_short": {
+      "method": "cumulative",
+      "rmse_ratio_vs_bayesian": 0.9512699739410392
+    },
+    "deep_cpoe_allowed": {
+      "method": "cumulative",
+      "rmse_ratio_vs_bayesian": 1.0013988341408693
+    },
+    "def_pass_epa_rate": {
+      "method": "cumulative",
+      "rmse_ratio_vs_bayesian": 1.006200230264276
+    },
+    "def_rush_epa_rate": {
+      "method": "bayesian",
+      "rmse_ratio_vs_bayesian": 1.0
+    },
+    "epa_rate": {
+      "method": "bayesian",
+      "rmse_ratio_vs_bayesian": 1.0
+    },
+    "explosive_bayes": {
+      "method": "dynamic_beta",
+      "rmse_ratio_vs_bayesian": 1.001904336373929
+    },
+    "fd_bayes": {
+      "method": "logit_kalman",
+      "rmse_ratio_vs_bayesian": 0.9921528135331432
+    },
+    "int_rate": {
+      "method": "bayesian",
+      "rmse_ratio_vs_bayesian": 1.0
+    },
+    "medium_cpoe_allowed": {
+      "method": "cumulative",
+      "rmse_ratio_vs_bayesian": 1.0028156485646678
+    },
+    "qb_scramble_ypc_bayes": {
+      "method": "cumulative",
+      "rmse_ratio_vs_bayesian": 0.9924120127023568
+    },
+    "rush_yards_per_carry": {
+      "method": "cumulative",
+      "rmse_ratio_vs_bayesian": 1.0078892736379712
+    },
+    "rushing_epa_rate": {
+      "method": "bayesian",
+      "rmse_ratio_vs_bayesian": 1.0
+    },
+    "sack_bayes": {
+      "method": "cumulative",
+      "rmse_ratio_vs_bayesian": 1.0114199842430025
+    },
+    "sack_rate": {
+      "method": "cumulative",
+      "rmse_ratio_vs_bayesian": 1.00589517814336
+    },
+    "short_cpoe_allowed": {
+      "method": "cumulative",
+      "rmse_ratio_vs_bayesian": 1.0012022616098746
+    },
+    "turnover_bayes": {
+      "method": "bayesian",
+      "rmse_ratio_vs_bayesian": 1.0
+    },
+    "yac_bayes": {
+      "method": "cumulative",
+      "rmse_ratio_vs_bayesian": 0.9593735620771204
+    },
+    "yac_oe_allowed": {
+      "method": "cumulative",
+      "rmse_ratio_vs_bayesian": 1.0038214331705506
+    },
+    "ypc_bayes": {
+      "method": "cumulative",
+      "rmse_ratio_vs_bayesian": 0.9665929244108488
+    },
+    "ypt": {
+      "method": "cumulative",
+      "rmse_ratio_vs_bayesian": 0.9648072547216549
+    }
+  },
+  "methods": {
+    "bayesian": {
+      "mean_rmse_ratio_vs_bayesian": 1.0,
+      "median_exposure_rmse_ratio_vs_bayesian": 1.0,
+      "median_rmse_ratio_vs_bayesian": 1.0,
+      "outputs": 23,
+      "significant_losses": 0,
+      "significant_wins": 0,
+      "wins_vs_bayesian": 0
+    },
+    "ridge+offense_team_full": {
+      "mean_rmse_ratio_vs_bayesian": 0.9716455233849538,
+      "median_exposure_rmse_ratio_vs_bayesian": 0.9732294522569412,
+      "median_rmse_ratio_vs_bayesian": 0.9751707871585642,
+      "outputs": 12,
+      "significant_losses": 0,
+      "significant_wins": 8,
+      "wins_vs_bayesian": 12
+    },
+    "ridge+offense_team_neutral": {
+      "mean_rmse_ratio_vs_bayesian": 0.9728080447923285,
+      "median_exposure_rmse_ratio_vs_bayesian": 0.9723997702393132,
+      "median_rmse_ratio_vs_bayesian": 0.9750853650924269,
+      "outputs": 12,
+      "significant_losses": 0,
+      "significant_wins": 9,
+      "wins_vs_bayesian": 12
+    },
+    "ridge+teammate_full": {
+      "mean_rmse_ratio_vs_bayesian": 0.9587407540159879,
+      "median_exposure_rmse_ratio_vs_bayesian": 0.9496076603977595,
+      "median_rmse_ratio_vs_bayesian": 0.9570929826138791,
+      "outputs": 7,
+      "significant_losses": 0,
+      "significant_wins": 6,
+      "wins_vs_bayesian": 7
+    },
+    "ridge+teammate_neutral": {
+      "mean_rmse_ratio_vs_bayesian": 0.9619325621001014,
+      "median_exposure_rmse_ratio_vs_bayesian": 0.9524458935303193,
+      "median_rmse_ratio_vs_bayesian": 0.961312830179061,
+      "outputs": 7,
+      "significant_losses": 0,
+      "significant_wins": 6,
+      "wins_vs_bayesian": 7
+    },
+    "ridge_full": {
+      "mean_rmse_ratio_vs_bayesian": 0.9804894565530399,
+      "median_exposure_rmse_ratio_vs_bayesian": 0.9850900453262027,
+      "median_rmse_ratio_vs_bayesian": 0.9875906922301005,
+      "outputs": 23,
+      "significant_losses": 0,
+      "significant_wins": 10,
+      "wins_vs_bayesian": 22
+    },
+    "ridge_neutral": {
+      "mean_rmse_ratio_vs_bayesian": 1.001224425206276,
+      "median_exposure_rmse_ratio_vs_bayesian": 0.990928705351603,
+      "median_rmse_ratio_vs_bayesian": 0.9980735324506564,
+      "outputs": 23,
+      "significant_losses": 6,
+      "significant_wins": 9,
+      "wins_vs_bayesian": 13
+    }
+  },
+  "outputs": 23,
+  "validation_selected": {
+    "median_rmse_ratio_vs_bayesian": 0.9875906922301005,
+    "method_counts": {
+      "bayesian": 1,
+      "ridge+offense_team_full": 6,
+      "ridge+offense_team_neutral": 1,
+      "ridge+teammate_full": 4,
+      "ridge_full": 10,
+      "ridge_neutral": 1
+    },
+    "significant_losses": 0,
+    "significant_wins": 9
+  }
+}

@@ -123,7 +123,8 @@ def _modal_results(
         app_name,
         function_name,
         environment_name=environment_name,
-    ).with_options(max_containers=max(1, int(max_containers)))
+    )
+    function.update_autoscaler(max_containers=max(1, int(max_containers)))
     return function.map(tasks, order_outputs=False)
 
 

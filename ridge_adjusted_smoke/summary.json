@@ -1,0 +1,59 @@
+{
+  "historical_bakeoff_reference": {
+    "def_pass_epa_rate": {
+      "method": "cumulative",
+      "rmse_ratio_vs_bayesian": 1.006200230264276
+    },
+    "epa_rate": {
+      "method": "bayesian",
+      "rmse_ratio_vs_bayesian": 1.0
+    },
+    "yac_bayes": {
+      "method": "cumulative",
+      "rmse_ratio_vs_bayesian": 0.9593735620771204
+    },
+    "yac_oe_allowed": {
+      "method": "cumulative",
+      "rmse_ratio_vs_bayesian": 1.0038214331705506
+    }
+  },
+  "methods": {
+    "bayesian": {
+      "mean_rmse_ratio_vs_bayesian": 1.0,
+      "median_exposure_rmse_ratio_vs_bayesian": 1.0,
+      "median_rmse_ratio_vs_bayesian": 1.0,
+      "outputs": 4,
+      "significant_losses": 0,
+      "significant_wins": 0,
+      "wins_vs_bayesian": 0
+    },
+    "ridge_full": {
+      "mean_rmse_ratio_vs_bayesian": 0.9721774394992386,
+      "median_exposure_rmse_ratio_vs_bayesian": 0.9762207048719613,
+      "median_rmse_ratio_vs_bayesian": 0.9741904725333028,
+      "outputs": 4,
+      "significant_losses": 0,
+      "significant_wins": 3,
+      "wins_vs_bayesian": 4
+    },
+    "ridge_neutral": {
+      "mean_rmse_ratio_vs_bayesian": 0.9871966549343653,
+      "median_exposure_rmse_ratio_vs_bayesian": 0.9955386166666413,
+      "median_rmse_ratio_vs_bayesian": 0.9943332587791286,
+      "outputs": 4,
+      "significant_losses": 0,
+      "significant_wins": 2,
+      "wins_vs_bayesian": 3
+    }
+  },
+  "outputs": 4,
+  "validation_selected": {
+    "median_rmse_ratio_vs_bayesian": 0.9766440983770899,
+    "method_counts": {
+      "ridge_full": 2,
+      "ridge_neutral": 2
+    },
+    "significant_losses": 0,
+    "significant_wins": 2
+  }
+}

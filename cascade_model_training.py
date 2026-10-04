@@ -19,11 +19,12 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+from project_paths import DEFAULT_ARTIFACT_DIR
 
 # -- Paths --------------------------------------------------------------------
-BASE_DIR = Path("C:/Users/steve/OneDrive/Desktop")
+BASE_DIR = DEFAULT_ARTIFACT_DIR
 MODELING_DIR = Path(__file__).resolve().parent
-CACHE_DIR = BASE_DIR / "Writing/WR Clustering"
+CACHE_DIR = MODELING_DIR / "artifacts" / "cache"
 DEFAULT_SEASON_START = 2017
 DEFAULT_SEASON_END = 2024
 

@@ -740,9 +740,7 @@ def simulate_synthetic_home_games(
             failures.append(f"{home_team}: {error}")
             continue
 
-        history_rest = derive_rest_days(team_stats, home_team, gameday)
-        home_rest = min(history_rest, MAX_REST_DAYS) if pd.notna(history_rest) else 7.0
-        home_feature_row["days_rest"] = home_rest
+        home_feature_row["days_rest"] = 7.0
         home_feature_row["opp_days_rest"] = 7.0
 
         team_features = pd.DataFrame(
@@ -942,7 +940,7 @@ def main() -> None:
     workers = run_columns[2].number_input(
         parallel_label,
         min_value=1,
-        max_value=6 if backend == "Local" else 32,
+        max_value=6 if backend == "Local" else 100,
         value=1 if backend == "Local" else 8,
         step=1,
         key=f"single_parallelism_{backend.lower()}",
@@ -964,13 +962,15 @@ def main() -> None:
     week_workers = week_columns[2].number_input(
         week_parallel_label,
         min_value=1,
-        max_value=6 if week_backend == "Local" else 32,
+        max_value=6 if week_backend == "Local" else 100,
         value=1 if week_backend == "Local" else 16,
         step=1,
         key=f"week_parallelism_{week_backend.lower()}",
     )
     week_output_dir = week_columns[3].text_input(
-        "Week output folder", value=str(WORKSPACE_DIR / f"week_{int(week):02d}"), key="week_output_dir"
+        "Week output folder",
+        value=str(WORKSPACE_DIR / f"week_{int(week):02d}"),
+        key=f"week_output_dir_{int(week)}",
     )
     st.caption(
         f"Runs all {len(week_games)} games on week {int(week)} with default depth charts (no per-player "
@@ -1003,7 +1003,7 @@ def main() -> None:
     syn_workers = syn_columns[2].number_input(
         syn_parallel_label,
         min_value=1,
-        max_value=6 if syn_backend == "Local" else 32,
+        max_value=6 if syn_backend == "Local" else 100,
         value=1 if syn_backend == "Local" else 16,
         step=1,
         key=f"syn_parallelism_{syn_backend.lower()}",
@@ -1011,7 +1011,7 @@ def main() -> None:
     syn_output_dir = syn_columns[3].text_input(
         "Synthetic output folder",
         value=str(WORKSPACE_DIR / f"synthetic_home_week_{int(week):02d}"),
-        key="syn_output_dir",
+        key=f"syn_output_dir_{int(week)}",
     )
     st.caption(
         "Simulates all 32 NFL teams hosting a synthetic opponent with replacement-level values for all team "
