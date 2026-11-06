@@ -1,0 +1,12 @@
+{
+  "017e130d7cb36bbbc4562436a99dd5f2eb184389ab1cb8f65e33f5f35169c2a3": {"name": "Rebuilt models", "detail": "Rebuilt through 2025 with over-expectation targets, refreshed for 2026. Before the input cleanup."},
+  "0f8b7fb92b45f882468ef32158340ecc7bca036dda344f50c2c696aefcfcbcd3": {"name": "Rebuilt models", "detail": "Rebuilt through 2025 with over-expectation targets, refreshed for 2026. Before the input cleanup."},
+  "7854affc0b19ac45036d4197ee86cfd6a28d96408c41e8dcecbc9bbd557a825f": {"name": "Noisy inputs dropped", "detail": "Very noisy QB inputs dropped from the models, refreshed for 2026."},
+  "92c0f64988d2865401d6585e7ebbcc41eca86306b9c38f5f9a33dbe272386ba1": {"name": "Goal-line models", "detail": "Yardage models treat plays stopped by the goal line as 'at least this far'. One training seed. Refreshed for 2026."},
+  "96d9a031ea202c7005b2ff8458b6f7e84c6454c6df614a20c7991721e23a2107": {"name": "Throws-only models", "detail": "Completion and interception models train on actual throws, not sacks or scrambles. Refreshed for 2026."},
+  "a71108b549fa0c7965995c7259ad5f67541361ec8a0ab532f28bc8c02850c409": {"name": "Seed-averaged models", "detail": "Goal-line models plus ten models averaged over ten training seeds, which steadies team ratings. Refreshed for 2026."},
+  "pv-attempts-20261105": {"name": "Throws-only models (not refreshed)", "detail": "Packaged before the weekly refresh, so it cannot simulate upcoming games."},
+  "pv-goal-20261105": {"name": "Goal-line models (not refreshed)", "detail": "Packaged before the weekly refresh, so it cannot simulate upcoming games."},
+  "pv-nodeep-20261104": {"name": "Noisy inputs dropped (not refreshed)", "detail": "Packaged before the weekly refresh, so it cannot simulate upcoming games."},
+  "pv-seedavg-20261105": {"name": "Seed-averaged models (not refreshed)", "detail": "Packaged before the weekly refresh, so it cannot simulate upcoming games."}
+}

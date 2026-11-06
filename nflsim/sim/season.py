@@ -21,6 +21,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from nflsim.features.forecast_weather import apply_forecast, forecast_tag, load_forecast
 from nflsim.features.game_inputs import build_real_game, slot_assignments
 from nflsim.features.slots import SLOT_LIMITS
 from nflsim.names import row_display_name
@@ -281,7 +282,11 @@ def run_experiment(runtime, artifact_dir: Path, bundle_hash: str, season: int, m
     root = season_root(season, bundle_hash)
     run_id = f"season-{season}-{bundle_hash[:12]}"
     options = dict(backend=backend, parallelism=parallelism, run_id=run_id, seed=seed, on_progress=on_progress)
-    tag = f"sims{simulations}-seed{seed}"
+    forecast = load_forecast(schedule)
+    schedule = apply_forecast(schedule, forecast)
+    remaining = schedule[schedule.home_score.isna()].sort_values("game_id")
+    # New weather means a new baseline, so an experiment's differences never include a forecast change.
+    tag = f"sims{simulations}-seed{seed}-{forecast_tag(forecast)}"
     stage(f"Baseline: {len(remaining)} unplayed games from week {int(remaining.week.min())}; bundle {bundle_hash[:12]}")
     baseline = cached_scores(root / f"baseline-{tag}.parquet", lambda: simulate(
         runtime, artifact_dir, bundle_hash, schedule, roster, remaining, [], simulations, **options))
@@ -308,6 +313,7 @@ def run_experiment(runtime, artifact_dir: Path, bundle_hash: str, season: int, m
         "season": season, "bundle_hash": bundle_hash, "moves": [asdict(move) for move in moves],
         "first_week": first_week, "affected_teams": sorted(affected), "games_resimulated": changed.game_id.tolist(),
         "simulations_per_game": simulations, "seasons": seasons, "seed": seed, "run_id": run_id,
+        "weather_forecast": {"source": "Open-Meteo", "games": len(forecast), "tag": forecast_tag(forecast)},
         "standard_errors": "paired season draws only; game-simulation noise is shared through common seeds",
     }, indent=2), encoding="utf-8")
     return load_experiment(output)
@@ -337,9 +343,11 @@ def main():
     moves = [parse_move(text) for text in args.move]
     if not moves:
         schedule, roster, _ = _load_inputs(args.season, artifact_dir / "weekly_inputs")
+        forecast = load_forecast(schedule)
+        schedule = apply_forecast(schedule, forecast)
         remaining = schedule[schedule.home_score.isna()].sort_values("game_id")
         root = season_root(args.season, bundle_hash)
-        baseline = cached_scores(root / f"baseline-sims{args.simulations}-seed{args.seed}.parquet", lambda: simulate(
+        baseline = cached_scores(root / f"baseline-sims{args.simulations}-seed{args.seed}-{forecast_tag(forecast)}.parquet", lambda: simulate(
             runtime, artifact_dir, bundle_hash, schedule, roster, remaining, [], args.simulations, backend=args.backend,
             parallelism=args.parallelism, run_id=f"season-{args.season}-{bundle_hash[:12]}", seed=args.seed))
         table = summarize(*play_seasons(schedule, baseline, args.seasons, args.seed))

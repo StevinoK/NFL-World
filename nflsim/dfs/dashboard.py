@@ -161,20 +161,20 @@ def main() -> None:
               eyebrow="DFS")
     ui.section("Slate", st.sidebar)
 
-    season = st.sidebar.number_input("Season", min_value=2016, max_value=2100, value=DEFAULT_SEASON, step=1)
-    week = st.sidebar.number_input("Week", min_value=1, max_value=22, value=1, step=1)
+    season = st.sidebar.number_input("Season", min_value=2016, max_value=2100, value=DEFAULT_SEASON, step=1, help='Season of the slate.')
+    week = st.sidebar.number_input("Week", min_value=1, max_value=22, value=1, step=1, help='Week of the slate.')
 
     ui.section("Inputs", st.sidebar)
     # file_uploader's "Browse files" button opens the OS's native file explorer dialog.
-    sim_file = st.sidebar.file_uploader("Simulations CSV", type="csv", key="sims_upload")
-    prices_file = st.sidebar.file_uploader("DK Salaries CSV", type="csv", key="prices_upload")
-    entries_file = st.sidebar.file_uploader("DK Entries CSV", type="csv", key="entries_upload")
+    sim_file = st.sidebar.file_uploader("Simulations CSV", type="csv", key="sims_upload", help='Player results from a simulation run: the players.csv in its output folder.')
+    prices_file = st.sidebar.file_uploader("DK Salaries CSV", type="csv", key="prices_upload", help='The salary file downloaded from DraftKings for this contest.')
+    entries_file = st.sidebar.file_uploader("DK Entries CSV", type="csv", key="entries_upload", help='Your entries file from DraftKings. The optimizer fills these entries so you can upload them back.')
 
     ui.section("Settings", st.sidebar)
     with st.sidebar.expander("Contest settings", expanded=True):
-        salary_min = st.number_input("Salary floor", value=48000, step=500)
-        salary_max = st.number_input("Salary cap", value=50000, step=500)
-        price_floor = st.number_input("Min player salary to include", value=600, step=50)
+        salary_min = st.number_input("Salary floor", value=48000, step=500, help='Lineups must spend at least this much.')
+        salary_max = st.number_input("Salary cap", value=50000, step=500, help='Lineups may spend at most this much.')
+        price_floor = st.number_input("Min player salary to include", value=600, step=50, help='Leave out players cheaper than this.')
         optimization_objective = st.selectbox(
             "Lineup objective",
             ["Omega ratio", "Winner odds"],
@@ -182,10 +182,10 @@ def main() -> None:
         )
 
     with st.sidebar.expander("Field-model settings"):
-        num_agents = st.number_input("Field agents", value=500, min_value=10, step=50)
-        team_size = st.number_input("Lineups per agent", value=5, min_value=1, step=1)
-        iterations = st.number_input("Improvement iterations", value=3, min_value=1, step=1)
-        subsample = st.slider("Agent simulation subsample", 0.05, 1.0, 0.5)
+        num_agents = st.number_input("Field agents", value=500, min_value=10, step=50, help='Simulated opponents building lineups, used to estimate how the field will play.')
+        team_size = st.number_input("Lineups per agent", value=5, min_value=1, step=1, help='Lineups each simulated opponent builds.')
+        iterations = st.number_input("Improvement iterations", value=3, min_value=1, step=1, help='Rounds of improving each lineup. More can find better lineups but takes longer.')
+        subsample = st.slider("Agent simulation subsample", 0.05, 1.0, 0.5, help='Share of simulations each opponent sees. Lower values make opponents less alike.')
         pool_size = st.number_input(
             "Candidate lineup pool",
             value=20000,
@@ -210,8 +210,8 @@ def main() -> None:
                 list(labels),
                 index=showdown_positions[0] if showdown_positions else 0,
                 format_func=lambda slate_id: labels[slate_id],
-            )
-        dff_date = st.date_input("DailyFantasyFuel slate date", value=date.today())
+            help='The RotoWire slate that matches this contest.')
+        dff_date = st.date_input("DailyFantasyFuel slate date", value=date.today(), help='Date of the slate to pull from DailyFantasyFuel.')
 
     if not (sim_file and prices_file and entries_file):
         st.info("Choose simulations, salary, and entries CSVs in the sidebar to begin.")
@@ -265,10 +265,10 @@ def main() -> None:
         st.caption("More than one kicker is priced for these teams; pick the actual starter.")
         for team, group in ambiguous.items():
             options = group.sort_values("Salary", ascending=False)["Name"].unique().tolist()
-            kicker_choices[team] = st.selectbox(f"{team} kicker", options, key=f"kicker_{team}")
+            kicker_choices[team] = st.selectbox(f"{team} kicker", options, key=f"kicker_{team}", help='Kicker to use for this team, since projection sources can differ.')
         prices = apply_kicker_selection(prices, kicker_choices)
 
-    if st.button("Load projections"):
+    if st.button("Load projections", help='Download public projections to compare with the simulations.'):
         try:
             simulations_raw = load_simulations(sim_file)
         except (OSError, pd.errors.ParserError) as error:
@@ -357,8 +357,8 @@ def main() -> None:
             on_click=apply_external_targets,
             args=(series.rename(label), projections),
             use_container_width=True,
-        )
-    button_cols[-1].button("Reset player scales", on_click=reset_player_targets, use_container_width=True)
+        help="Scale this player's simulated points so the average matches this source.")
+    button_cols[-1].button("Reset player scales", on_click=reset_player_targets, use_container_width=True, help='Clear all scaling and return to the simulated values.')
     last_scale = st.session_state.get("last_scale_source")
     if last_scale:
         st.caption(
@@ -366,12 +366,12 @@ def main() -> None:
             f"at {last_scale[3]:.0%} source weight."
         )
 
-    global_scale = st.slider("Global scale (all players)", 0.50, 1.50, 1.00, 0.01)
+    global_scale = st.slider("Global scale (all players)", 0.50, 1.50, 1.00, 0.01, help="Multiply every player's simulated points by this amount.")
 
     targets = st.session_state.setdefault("player_targets", {})
     factors: dict[str, float] = {}
-    show_histograms = st.checkbox("Show distribution histograms", value=True)
-    max_shown = st.number_input("Players shown", min_value=5, max_value=200, value=min(40, len(projections)), step=5)
+    show_histograms = st.checkbox("Show distribution histograms", value=True, help="Draw each player's simulated points. Slower with many players.")
+    max_shown = st.number_input("Players shown", min_value=5, max_value=200, value=min(40, len(projections)), step=5, help='How many players to list, highest salary or projection first.')
 
     for short_name, row in projections.head(int(max_shown)).iterrows():
         base = float(row["sim_mean"]) if pd.notna(row["sim_mean"]) else 0.0
@@ -398,7 +398,7 @@ def main() -> None:
                 step=0.1,
                 key=f"target_{short_name}",
                 label_visibility="collapsed",
-            )
+            help="Scale this player's simulations to average this many points.")
             targets[short_name] = target
             factor = (target / base) * global_scale
         else:
@@ -420,7 +420,7 @@ def main() -> None:
     with st.expander("All players (scaled)", expanded=False):
         st.dataframe(scaled_summary, width="stretch")
 
-    if not st.button("Run optimizer", type="primary"):
+    if not st.button("Run optimizer", type="primary", help='Build lineups with these settings.'):
         return
 
     scale_series = pd.Series(
@@ -515,9 +515,9 @@ def main() -> None:
                  color=[ui.SERIES[0], ui.SERIES[1], ui.SERIES[2]])
 
     csv_bytes = filled_export.to_csv(index=False).encode("utf-8")
-    st.download_button("Download entries CSV", data=csv_bytes, file_name="Entry.csv", mime="text/csv")
+    st.download_button("Download entries CSV", data=csv_bytes, file_name="Entry.csv", mime="text/csv", help='Save the finished lineups in the format DraftKings accepts.')
 
-    save_path = st.text_input("Optional: also save the entries CSV to a path", value="")
+    save_path = st.text_input("Optional: also save the entries CSV to a path", value="", help='Also write the file to this location on your PC.')
     if save_path:
         filled_export.to_csv(save_path, index=False)
         st.success(f"Saved to {save_path}")

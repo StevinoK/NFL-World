@@ -12,6 +12,7 @@ from nflsim.bundle import seal_bundle, validate_bundle, verify_bundle_hash
 from nflsim.features.input_sources import write_input_sources
 from nflsim.features.builder import canonicalize_teams, skill_roster
 from nflsim.names import row_display_name
+from nflsim.bundle_labels import bundle_info, note_bundle
 from nflsim.paths import ROOT, digest, output_dir, write_json
 from nflsim.features.player_value import DEFAULT_PM_DIR, DEPTH_CHART_GROUP, ROSTER_GROUP, load_pm_estimates
 from nflsim.semantics import semantics_of
@@ -384,6 +385,8 @@ def refresh_weekly_bundle(season: int, base_bundle: Path = ROOT / "artifacts/run
     else:
         output_dir(final.parent)
         shutil.move(str(candidate), str(final))
+    parent = bundle_info(base_bundle)
+    note_bundle(final, parent.name.replace(" (not refreshed)", ""), parent.detail)
     write_json(work / "refresh_manifest.json", {"status": "complete", "season": season,
         "base_bundle_hash": base_hash, "new_bundle_hash": bundle_hash, "bundle_path": str(final),
         "feature_manifest_sha256": digest(final / "feature_manifest.json"),

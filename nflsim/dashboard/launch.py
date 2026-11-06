@@ -4,7 +4,7 @@ The desktop shortcuts call this with pythonw, so there is no console window; eac
 background after its browser tab closes, and clicking the shortcut again reuses it. Server output goes to
 nflsim/outputs/dashboard_logs.
 
-    pythonw nflsim/dashboard/launch.py simulator
+    pythonw nflsim/dashboard/launch.py hub
 """
 
 from __future__ import annotations
@@ -21,6 +21,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[2]
 # Name: (script, port); ports match .claude/launch.json.
 DASHBOARDS = {
+    "hub": ("nflsim/dashboard/hub.py", 8516),
     "simulator": ("nflsim/dashboard/app.py", 8517),
     "dfs": ("nflsim/dfs/dashboard.py", 8518),
     "ridge": ("nflsim/ridge/explorer.py", 8519),
@@ -46,7 +47,7 @@ def ensure_running(name: str) -> str:
         with open(log_path, "w", encoding="utf-8") as log:
             server = subprocess.Popen(
                 [str(python), "-m", "streamlit", "run", str(REPO / script), "--server.port", str(port), "--server.address", "localhost",
-                 "--server.headless", "true"],
+                 "--server.headless", "true", "--server.fileWatcherType", "none"],
                 cwd=REPO, env=environment, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
                 creationflags=subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP,
             )

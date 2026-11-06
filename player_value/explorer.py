@@ -186,7 +186,7 @@ def main():
         return
     labels = player_labels(data)
     picker, *tiles = st.columns([3, 1, 1, 1])
-    player_id = picker.selectbox('Player', list(labels), format_func=labels.__getitem__, key='player_id')
+    player_id = picker.selectbox('Player', list(labels), format_func=labels.__getitem__, key='player_id', help='The player to chart. Type to search by name.')
     rows = player_series(data, player_id)
     latest = rows.iloc[-1]
     tiles[0].metric(f"Latest ({latest['period']})", f"{latest['estimate']:+.4f}")

@@ -2,6 +2,12 @@
   "version": "0.0.1",
   "configurations": [
     {
+      "name": "nfl-hub",
+      "runtimeExecutable": "./NFL.venv/Scripts/python.exe",
+      "runtimeArgs": ["-m", "streamlit", "run", "nflsim/dashboard/hub.py", "--server.port", "8516", "--server.headless", "true", "--server.fileWatcherType", "none"],
+      "port": 8516
+    },
+    {
       "name": "nflsim-dashboard",
       "runtimeExecutable": "./NFL.venv/Scripts/python.exe",
       "runtimeArgs": ["-m", "nflsim.dashboard.run", "--server.port", "8517", "--server.headless", "true"],

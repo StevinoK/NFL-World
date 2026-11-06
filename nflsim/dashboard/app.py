@@ -24,6 +24,9 @@ from nflsim.sim.synthetic_games import (build_synthetic_game, _load_inputs,
                                             synthetic_game_row, synthetic_team_options)
 from nflsim.sim.runtime import RidgeRuntime
 from nflsim.bundle import verify_bundle_hash
+from nflsim.bundle_labels import all_bundles, bundle_label as readable_bundle_label
+from nflsim.features.forecast_weather import apply_forecast, load_forecast
+from nflsim.sim.season import latest_bundle
 from nflsim.features.weekly_refresh import refresh_weekly_bundle
 from nflsim import ui
 
@@ -35,7 +38,29 @@ def cached_runtime(artifact_dir: str, bundle_hash: str) -> RidgeRuntime:
     return load_runtime(Path(artifact_dir))
 
 
-@st.cache_data(show_spinner="Loading Ridge feature tables...")
+@st.cache_resource(show_spinner="Checking the bundle's files...")
+def verified_hash(artifact_dir: str) -> str:
+    return verify_bundle_hash(Path(artifact_dir))
+
+
+@st.cache_resource(show_spinner="Loading rosters and schedule...", max_entries=2)
+def cached_inputs(season: int, artifact_dir: str):
+    """Shared between reruns, not copied, so nothing below may change these tables in place."""
+    return _load_inputs(season, Path(artifact_dir) / "weekly_inputs")
+
+
+@st.cache_data(show_spinner="Getting the weather forecast...", ttl=3600)
+def cached_forecast(schedule: pd.DataFrame, refreshes: int) -> pd.DataFrame:
+    return load_forecast(schedule, refresh=refreshes > 0)
+
+
+@st.cache_data(show_spinner=False, ttl=600)
+def bundle_choices() -> dict[str, str]:
+    current = latest_bundle()
+    return {str(info.path.resolve()): readable_bundle_label(info, current) for info in all_bundles()}
+
+
+@st.cache_resource(show_spinner="Loading Ridge feature tables...", max_entries=2)
 def cached_tables(artifact_dir: str, feature_hash: str):
     root = Path(artifact_dir)
     players = pd.read_csv(root / "player_stats_wide.csv", dtype={"player_id": str, "game_id": str})
@@ -101,7 +126,7 @@ def lineup_controls(runtime, player_stats, roster, depth, team, week, kickoff, u
             selected = columns[index].selectbox(
                 slot, options, index=options.index(default), format_func=lambda value, names=labels: names.get(value, value),
                 key=f"{key_prefix}_{team}_{slot}",
-            )
+            help='Player in this lineup slot. Defaults come from the depth chart.')
             used.add(selected)
             assignments[slot] = {"player_id": selected, "player_name": labels.get(selected, selected), "position": position}
     return assignments
@@ -117,7 +142,7 @@ def dl_controls(runtime, roster, depth, team, week, kickoff, key_prefix):
     ordered = list(dict.fromkeys([item["player_id"] for item in default] + list(names)))
     selected = st.multiselect(f"{team} DL (up to {GROUP_LIMITS['DL']}, weighted by trailing snap share)", ordered,
                               default=[item["player_id"] for item in default], max_selections=GROUP_LIMITS["DL"],
-                              format_func=lambda pid: f"{names.get(pid, pid)} ({pid})", key=f"{key_prefix}_{team}_DL")
+                              format_func=lambda pid: f"{names.get(pid, pid)} ({pid})", key=f"{key_prefix}_{team}_DL", help="Defensive linemen counted in this team's player value. Leave as is to use the depth chart.")
     return [{"player_id": pid, "player_name": names.get(pid, pid), "position": "DL"} for pid in selected]
 
 
@@ -141,11 +166,11 @@ def player_value_panel(runtime, team, assignments, dl, season, week, kickoff, ga
         columns = ["group", "rank", "player_id", "pm", "pm_source", "share", "weight", "contribution"]
         st.dataframe(components.reindex(columns=columns).round(4), hide_index=True, width="stretch")
     overrides = {}
-    if st.checkbox("Override group player values", key=f"{key_prefix}_{team}_pv_override"):
+    if st.checkbox("Override group player values", key=f"{key_prefix}_{team}_pv_override", help='Type your own player value for each position group instead of computing it from the lineup.'):
         inputs = st.columns(len(GROUP_COLUMN))
         for index, (group, column) in enumerate(GROUP_COLUMN.items()):
             overrides[column] = float(inputs[index].number_input(group, value=float(values[column]), format="%.4f",
-                                                                 key=f"{key_prefix}_{team}_{column}"))
+                                                                 key=f"{key_prefix}_{team}_{column}", help='Your own player value for this group, replacing the computed value.'))
     return {**values, **overrides}, overrides
 
 
@@ -154,7 +179,7 @@ def player_stat_editor(runtime, player_stats, assignments_by_team, kickoff, edit
                for team, slots in assignments_by_team.items() for slot, item in slots.items()]
     labels = {f"{team} {slot}: {name}": (team, slot, player_id)
               for team, slot, player_id, name in choices}
-    selected = st.selectbox("Player inputs to edit", list(labels), key=f"{editor_key}_player")
+    selected = st.selectbox("Player inputs to edit", list(labels), key=f"{editor_key}_player", help='Choose a player in the lineup, then change the model inputs for that player in the table below.')
     team, slot, player_id = labels[selected]
     position = slot[:-1]
     baseline = pregame_player_snapshot(runtime, player_stats, player_id, kickoff, position)
@@ -167,7 +192,7 @@ def player_stat_editor(runtime, player_stats, assignments_by_team, kickoff, edit
     edited = st.data_editor(frame, key=f"{editor_key}_{player_id}_{version}", hide_index=True, disabled=["stat"],
                             column_config={"value": st.column_config.NumberColumn("value", format="%.4f")})
     apply_col, reset_col = st.columns(2)
-    if apply_col.button("Apply these inputs", key=f"apply_{identity}_{version}"):
+    if apply_col.button("Apply these inputs", key=f"apply_{identity}_{version}", help='Use the edited values in the next simulation run.'):
         updates = {str(name): float(value) for name, value in zip(edited.stat, edited.value)
                    if pd.notna(value) and not np.isclose(float(value), float(baseline.iloc[0].get(name, 0.0)))}
         if updates:
@@ -176,24 +201,11 @@ def player_stat_editor(runtime, player_stats, assignments_by_team, kickoff, edit
             overrides.pop(identity, None)
         st.session_state.ridge_editor_version[identity] = version + 1
         st.rerun()
-    if reset_col.button("Reset player inputs", key=f"reset_{identity}_{version}", disabled=not bool(locked)):
+    if reset_col.button("Reset player inputs", key=f"reset_{identity}_{version}", disabled=not bool(locked), help="Discard this player's edits and go back to the model's values."):
         overrides.pop(identity, None)
         st.session_state.ridge_editor_version[identity] = version + 1
         st.rerun()
     return {team: {player_id: locked} } if locked else {}
-
-
-def available_bundles() -> list[Path]:
-    base = ROOT / "artifacts/runtime"
-    versions = sorted((ROOT / "artifacts/bundles").glob("*"), key=lambda path: path.stat().st_mtime, reverse=True)
-    return [*(path for path in versions if (path / "bundle_manifest.json").is_file()), base]
-
-
-def bundle_label(path: str | Path) -> str:
-    path = Path(path)
-    if path.resolve() == (ROOT / "artifacts/runtime").resolve():
-        return "Base trained bundle"
-    return f"Weekly Ridge bundle {path.name[:12]}"
 
 
 def apply_pending_bundle(session_state, options=None):
@@ -239,26 +251,27 @@ def main():
     ui.section("Simulation", run_box)
     ui.section("Output", output_box)
     ui.section("Data operations", ops_box)
-    bundle_options = [str(path.resolve()) for path in available_bundles()]
+    choices = bundle_choices()
+    bundle_options = list(choices)
     apply_pending_bundle(st.session_state, bundle_options)
     current_choice = st.session_state.get("ridge_bundle_choice")
     if current_choice not in bundle_options:
         current_choice = bundle_options[0]
     artifact_text = model_box.selectbox(
         "Ridge bundle", bundle_options, index=bundle_options.index(current_choice),
-        format_func=bundle_label, key="ridge_bundle_choice",
-    )
+        format_func=choices.get, key="ridge_bundle_choice",
+    help="Which version of the models to use. Each is named for what changed. 'Current' is the newest one that can simulate upcoming games; 'training data only' bundles cannot.")
     artifact_dir = Path(artifact_text).expanduser().resolve()
     if not artifact_dir.is_dir():
         st.error(f"Ridge bundle directory not found: {artifact_dir}")
         st.stop()
-    bundle_hash = verify_bundle_hash(artifact_dir)
+    bundle_hash = verified_hash(str(artifact_dir))
     runtime = cached_runtime(str(artifact_dir), bundle_hash)
     with ops_box.expander("Weekly data refresh", expanded=False):
         refresh_season = datetime.now().year
         st.caption(f"Active data season: {refresh_season}. Historical seasons are kept frozen.")
         st.caption("Downloads the active season, preserves earlier frozen PBP/roster history, builds scheduled pregame rows, and publishes a new immutable Ridge bundle. Model weights and the validated 2024 ridge selection are reused.")
-        if st.button("Refresh data and Ridge features", key="ridge_refresh_button"):
+        if st.button("Refresh data and Ridge features", key="ridge_refresh_button", help='Download the latest games and rosters, and publish a new bundle for upcoming games. Takes several minutes. The models themselves are not retrained.'):
             try:
                 with st.status(f"Refreshing {refresh_season} data and features... this can take several minutes.", expanded=True):
                     # DL plus-minus needs participation data, published only after the season: carry 2025's.
@@ -273,8 +286,8 @@ def main():
     if artifact_dir.parent.name == "bundles":
         with ops_box.expander("Modal bundle upload", expanded=False):
             st.caption("Upload only publishes this immutable bundle to the isolated Ridge Modal volume. It does not deploy code or start simulations.")
-            confirm_upload = st.checkbox("I authorize upload to the Ridge Modal volume", key="ridge_confirm_upload")
-            if st.button("Upload selected Ridge bundle", disabled=not confirm_upload, key="ridge_upload_button"):
+            confirm_upload = st.checkbox("I authorize upload to the Ridge Modal volume", key="ridge_confirm_upload", help='Required before uploading. This copies the bundle to your Modal cloud storage.')
+            if st.button("Upload selected Ridge bundle", disabled=not confirm_upload, key="ridge_upload_button", help='Copy this bundle to Modal so cloud runs can use it. Starts no simulations.'):
                 try:
                     from nflsim.remote.sync_artifacts import upload_bundle
                     uploaded_hash = upload_bundle(artifact_dir, confirmed=confirm_upload)
@@ -289,8 +302,15 @@ def main():
     default_season = available_seasons[-1]
     season = slate_box.selectbox("Season", available_seasons, index=len(available_seasons)-1,
                                  help="Seasons with generated Ridge feature rows.")
-    schedule, roster, depth = _load_inputs(int(season), artifact_dir / "weekly_inputs")
+    schedule, roster, depth = cached_inputs(int(season), str(artifact_dir))
+    # Synthetic rankings stay free of this week's forecast, so they compare fairly from week to week.
     synthetic_schedule = schedule.copy()
+    with ops_box.expander("Weather forecast", expanded=False):
+        st.caption("Upcoming outdoor games use Open-Meteo's forecast for kickoff, saved once a day. Domes and retractable roofs get none.")
+        if st.button("Get the latest forecast", key="weather_refresh", help="Replace today's saved forecast with the newest one."):
+            st.session_state["weather_refreshes"] = st.session_state.get("weather_refreshes", 0) + 1
+    forecast = cached_forecast(schedule, st.session_state.get("weather_refreshes", 0))
+    schedule = apply_forecast(schedule, forecast)
     if schedule.empty:
         st.error(f"No regular-season schedule for {season}.")
         st.stop()
@@ -305,15 +325,15 @@ def main():
     # Open on the coming week: the first with an unplayed game.
     unplayed = schedule[pd.to_numeric(schedule.get("home_score"), errors="coerce").isna()] if "home_score" in schedule else schedule.iloc[:0]
     upcoming = int(unplayed.week.astype(int).min()) if not unplayed.empty else weeks[-1]
-    week = slate_box.selectbox("Week", weeks, index=weeks.index(upcoming) if upcoming in weeks else 0)
+    week = slate_box.selectbox("Week", weeks, index=weeks.index(upcoming) if upcoming in weeks else 0, help='Week to simulate. Opens on the next week with unplayed games.')
     week_rows = schedule[schedule.week.astype(int).eq(int(week))].sort_values(["gameday", "game_id"])
     game_labels = {f"{row.away_team} @ {row.home_team} ({pd.Timestamp(row.gameday).date()})": row.game_id for row in week_rows.itertuples()}
-    selected_label = slate_box.selectbox("Game", list(game_labels))
+    selected_label = slate_box.selectbox("Game", list(game_labels), help='The game to simulate when Run type is Single game.')
     selected_id = game_labels[selected_label]
-    mode = slate_box.radio("Run type", ["Single game", "Full week", "Synthetic opponents"])
+    mode = slate_box.radio("Run type", ["Single game", "Full week", "Synthetic opponents"], help='Single game: one matchup. Full week: every game this week. Synthetic opponents: each team against the same average opponent, for power rankings.')
     with header_slot:
         ui.header("Game Simulator", "Ridge player-value models: simulate a game, a full week or synthetic opponents.",
-                  {"Bundle": bundle_label(artifact_dir).replace("Weekly Ridge bundle ", ""), "Season": season,
+                  {"Bundle": choices[str(artifact_dir)].split(" · ")[0], "Season": season,
                    "Week": week, "Mode": mode}, eyebrow="Ridge PV")
         st.caption("Note: the QB team-start count keeps its trained feature contract; its training rows matched players "
                    "on same-game pass attempts. A pregame-only refit is a planned validation item.")
@@ -324,15 +344,17 @@ def main():
         if actual_roof(row) == "outdoors":
             outdoor_rows.append({"game_id": str(row.game_id), "away_team": row.away_team, "home_team": row.home_team,
                                  "temp": pd.to_numeric(pd.Series([row.get("temp")]), errors="coerce").iloc[0],
-                                 "wind": pd.to_numeric(pd.Series([row.get("wind")]), errors="coerce").iloc[0]})
+                                 "wind": pd.to_numeric(pd.Series([row.get("wind")]), errors="coerce").iloc[0],
+                                 "source": "Forecast" if row.get("weather_forecast") else "Recorded" if pd.notna(row.get("temp")) else "None"})
     if outdoor_rows:
         with st.expander("Outdoor game weather", expanded=False):
             edited_weather = st.data_editor(
                 pd.DataFrame(outdoor_rows), hide_index=True, width="stretch",
-                disabled=["game_id", "away_team", "home_team"],
+                disabled=["game_id", "away_team", "home_team", "source"],
                 column_config={
-                    "temp": st.column_config.NumberColumn("Temperature (F)", format="%.0f"),
-                    "wind": st.column_config.NumberColumn("Wind (mph)", format="%.0f"),
+                    "temp": st.column_config.NumberColumn("Temperature (F)", format="%.0f", help="Kickoff temperature. Edit to test other weather."),
+                    "wind": st.column_config.NumberColumn("Wind (mph)", format="%.0f", help="Kickoff wind speed. Edit to test other weather."),
+                    "source": st.column_config.TextColumn("Source", help="Forecast: Open-Meteo. Recorded: from the schedule. None: too far ahead, so the model treats the weather as unknown."),
                 },
                 key=f"weather_{season}_{week}",
             )
@@ -341,17 +363,17 @@ def main():
                 for row in edited_weather.itertuples()
                 if pd.notna(row.temp) and pd.notna(row.wind)
             }
-    simulations = int(run_box.number_input("Simulations per game", min_value=1, max_value=10000, value=20, step=5))
-    backend = run_box.selectbox("Backend", ["Local", "Modal"])
-    parallelism = int(run_box.number_input("Workers / containers", min_value=1, value=1 if backend == "Local" else 8, step=1))
-    use_model_rank = run_box.checkbox("Rank slots using model metrics", value=True)
+    simulations = int(run_box.number_input("Simulations per game", min_value=1, max_value=10000, value=20, step=5, help='More simulations give steadier results and take proportionally longer. 20 is a quick look; about 2,000 suits a final weekly run.'))
+    backend = run_box.selectbox("Backend", ["Local", "Modal"], help='Local runs on this PC. Modal runs in the cloud, which is much faster for big runs but needs the bundle uploaded first.')
+    parallelism = int(run_box.number_input("Workers / containers", min_value=1, value=1 if backend == "Local" else 8, step=1, help="Simulations running at once: CPU workers for Local, cloud containers for Modal. More is faster, up to your PC's limit."))
+    use_model_rank = run_box.checkbox("Rank slots using model metrics", value=True, help='Order players within a position by model metrics. Turn off to use the depth chart order.')
     if mode == "Synthetic opponents":
         team_options = synthetic_team_options(synthetic_schedule)
-        selected_teams = st.multiselect("Teams", team_options, default=team_options)
+        selected_teams = st.multiselect("Teams", team_options, default=team_options, help='Teams to run against the synthetic opponent.')
     else:
         selected_teams = []
     customize_lineup = st.checkbox("Customize depth chart and player inputs", value=mode == "Single game",
-                                   disabled=mode == "Full week")
+                                   disabled=mode == "Full week", help="Change who starts, and edit a player's model inputs, for this run only.")
     custom_assignments = {}
     custom_player_overrides = {}
     custom_dl, custom_pv, lineup_pv = {}, {}, {}
@@ -364,7 +386,7 @@ def main():
             if not selected_teams:
                 customize_teams = []
             else:
-                customize_team = st.selectbox("Customize this synthetic team", selected_teams)
+                customize_team = st.selectbox("Customize this synthetic team", selected_teams, help='The team whose lineup you want to change in this synthetic run.')
                 customize_teams = [customize_team]
             custom_game_row = (synthetic_game_row(synthetic_schedule, customize_teams[0], int(week))
                                if customize_teams else week_rows.iloc[0])
@@ -387,12 +409,12 @@ def main():
             with st.expander("Edit one player's Ridge model inputs", expanded=False):
                 selected_override = player_stat_editor(runtime, players, custom_assignments, kickoff, custom_key)
                 custom_player_overrides = selected_override
-    run_id = output_box.text_input("Run ID", f"ridge-{season}-w{int(week):02d}-{datetime.now():%Y%m%d-%H%M%S}", key="ridge_run_id")
+    run_id = output_box.text_input("Run ID", f"ridge-{season}-w{int(week):02d}-{datetime.now():%Y%m%d-%H%M%S}", key="ridge_run_id", help="Name of this run's output folder. The default includes the date and time.")
     save_key = f"ridge_synthetic_save_folder_{int(week):02d}" if mode == "Synthetic opponents" else "ridge_save_folder"
-    save_folder = output_box.text_input("Save folder", str(default_save_folder(mode, int(week))), key=save_key)
+    save_folder = output_box.text_input("Save folder", str(default_save_folder(mode, int(week))), key=save_key, help="Where this run's results are saved. Results pages only list runs saved under nflsim/outputs.")
 
     ui.section("Run")
-    if st.button("Run Ridge simulations", type="primary"):
+    if st.button("Run Ridge simulations", type="primary", help='Start the run with the settings on this page. Stay on the page until it finishes.'):
         if backend == "Modal":
             upload_record = ROOT / "config/last_upload.json"
             if not upload_record.exists() or json.loads(upload_record.read_text()).get("bundle_hash") != bundle_hash:
@@ -454,6 +476,7 @@ def main():
             "bundle_hash": bundle_hash, "feature_manifest_sha256": digest(artifact_dir / "feature_manifest.json"),
             "games": games.game_id.astype(str).unique().tolist(),
             "fantasy_scoring": "game_sim_fantasy.add_fantasy_points",
+            "weather_forecast": {"source": "Open-Meteo", "fetched_on": sorted(set(forecast.fetched_on.astype(str))), "games": len(forecast)},
             "player_value": {"custom_lineup_pv": lineup_pv, "pv_overrides": custom_pv,
                              "custom_dl": {team: [item["player_id"] for item in items] for team, items in custom_dl.items()}},
             "synthetic_home_away_swap": (

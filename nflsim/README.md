@@ -406,8 +406,19 @@ A network's team-level predictions move with its random seed about as much as wi
 shape to the average, so the sim still runs one network per decision. The output starts as a copy of the base refit
 and packages like any other refit. Each model's `{model}_seed_average.json` records its seeds.
 
-## Season QB experiments
+## NFL Models app
 
-The Game Simulator dashboard has a Season QB Experiments page (`nflsim/dashboard/pages/Season_QB_Experiments.py`). Pick a team, a new
-starter and a first week to compare the rest of the season with the baseline. It calls `nflsim.sim.season.run_experiment`, the same
-code as `python -m nflsim.sim.season --move`, and saves results under `outputs/season/<season>/<bundle>/experiments`.
+`nflsim/dashboard/hub.py` puts every dashboard under one app with tabs across the top; the **NFL Models** desktop shortcut opens it.
+
+- **Simulate:** Game Simulator; Season QB Experiments, which compares the rest of a season under a new starter through
+  `nflsim.sim.season.run_experiment` (the same code as `python -m nflsim.sim.season --move`).
+- **Results:** Weekly Matchups, for saved full-week runs against the market; Synthetic Report, for saved runs against the synthetic opponent.
+- **Tools:** DFS Optimizer, Ridge Graph Builder, Player Estimates.
+
+The individual dashboards still run on their own through `nflsim/dashboard/launch.py`.
+
+Bundles show readable names from `config/bundle_notes.json`; a weekly refresh inherits its parent's name.
+
+Upcoming outdoor games get kickoff temperature and wind from Open-Meteo (`nflsim/features/forecast_weather.py`), saved once a day under
+`outputs/weather`. Forecasts reach about 16 days ahead; later games, domes and retractable roofs still count as unknown or indoor weather as
+before. Synthetic runs leave the forecast out, so rankings compare fairly from week to week.
