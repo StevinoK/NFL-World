@@ -5,7 +5,7 @@ import pandas as pd
 import pytest
 
 from nflsim.sim import standings
-from nflsim.sim.season import Move, apply_moves, parse_move, play_seasons
+from nflsim.sim.season import Move, apply_moves, game_changes, parse_move, play_seasons, quarterbacks
 from nflsim.sim.standings import INDEX, Season, break_tie, seed
 
 RNG = np.random.default_rng(0)
@@ -82,3 +82,22 @@ def test_season_draws_are_shared_so_unchanged_scores_give_identical_seasons():
     first, second = play_seasons(schedule, sims, 50, seed=7), play_seasons(schedule, sims, 50, seed=7)
     assert np.array_equal(first[0], second[0]) and np.array_equal(first[1], second[1])
     assert first[0].sum(1).tolist() == [32.0] * 50
+
+
+def test_quarterbacks_uses_each_players_latest_team():
+    roster = pd.DataFrame({"player_id": ["00-1", "00-1", "00-2", "00-3"], "player_name": ["A B", "A B", "C D", "E F"],
+                           "team": ["LV", "MIN", "MIN", "MIN"], "week": [8, 9, 9, 9], "position": ["QB", "QB", "QB", "WR"],
+                           "depth_team": [1, 2, 1, 1]})
+    table = quarterbacks(roster)
+    assert table.player_id.tolist() == ["00-2", "00-1"] and table.team.tolist() == ["MIN", "MIN"]
+
+
+def test_game_changes_compares_only_rerun_games():
+    schedule = pd.DataFrame({"game_id": ["G1", "G2"], "week": [9, 10], "home_team": ["MIN", "LV"], "away_team": ["DET", "GB"]})
+    base = pd.DataFrame({"game_id": ["G1", "G1", "G2"], "simulation": [1, 2, 1], "home_score": [20, 30, 10], "away_score": [10, 30, 20]})
+    rerun = pd.DataFrame({"game_id": ["G1", "G1"], "simulation": [1, 2], "home_score": [10, 30], "away_score": [20, 20]})
+    table = game_changes(base, rerun, schedule)
+    assert table.game_id.tolist() == ["G1"]
+    assert table.margin_base[0] == 5 and table.margin_experiment[0] == 0
+    assert table.home_win_base[0] == 0.75 and table.home_win_experiment[0] == 0.5
+    assert table.total_base[0] == 45 and table.total_experiment[0] == 40

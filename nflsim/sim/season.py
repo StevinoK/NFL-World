@@ -61,6 +61,15 @@ def parse_move(text: str) -> Move:
     return Move(player, team, slot or None)
 
 
+def quarterbacks(roster: pd.DataFrame) -> pd.DataFrame:
+    """Every rostered QB's latest row: player_id, player_name, team, depth_team."""
+    rows = roster[roster.position.astype(str).eq("QB")].assign(player_id=lambda frame: frame.player_id.astype(str))
+    rows = rows[rows.player_id.ne("nan")].assign(week=lambda frame: pd.to_numeric(frame.week, errors="coerce"))
+    latest = rows.sort_values("week").groupby("player_id", as_index=False).tail(1)
+    latest = latest.assign(player_name=latest.apply(row_display_name, axis=1))
+    return latest[["player_id", "player_name", "team", "depth_team"]].sort_values(["team", "depth_team", "player_name"]).reset_index(drop=True)
+
+
 def _normal(name: str) -> str:
     return re.sub(r"[^a-z ]", "", str(name).lower().replace(".", " ")).split(" jr")[0].strip()
 
@@ -123,7 +132,7 @@ def forced_assignments(roster, depth, player_stats, team, game_row, moves):
 
 
 def simulate(runtime, artifact_dir, bundle_hash, schedule, roster, games, moves, simulations, *, backend, parallelism,
-             run_id, seed) -> pd.DataFrame:
+             run_id, seed, on_progress=None) -> pd.DataFrame:
     depth = snapshot_depth(roster, schedule)
     depth["dt"] = pd.to_datetime(depth.dt, errors="coerce", utc=True).dt.tz_convert(None)
     prepared = []
@@ -136,6 +145,8 @@ def simulate(runtime, artifact_dir, bundle_hash, schedule, roster, games, moves,
     done = {"count": 0}
 
     def progress(completed, total):
+        if on_progress:
+            on_progress(completed, total)
         if completed * 20 // total > done["count"]:
             done["count"] = completed * 20 // total
             print(f"  simulated {completed:,}/{total:,} game simulations", flush=True)
@@ -216,6 +227,92 @@ def latest_bundle() -> Path:
     return max(bundles, key=lambda path: path.stat().st_mtime)
 
 
+def game_changes(baseline: pd.DataFrame, rerun: pd.DataFrame, schedule: pd.DataFrame) -> pd.DataFrame:
+    """Baseline and experiment margin, total and home win rate for each re-simulated game."""
+
+    def per_game(scores):
+        margin = scores.home_score - scores.away_score
+        return scores.assign(margin=margin, total=scores.home_score + scores.away_score, home_win=(np.sign(margin) + 1) / 2
+                             ).groupby("game_id")[["margin", "total", "home_win"]].mean()
+
+    base, experiment = per_game(baseline[baseline.game_id.isin(rerun.game_id)]), per_game(rerun)
+    table = base.add_suffix("_base").join(experiment.add_suffix("_experiment")).reset_index()
+    games = schedule.assign(game_id=schedule.game_id.astype(str))[["game_id", "week", "home_team", "away_team"]]
+    return games.merge(table, on="game_id").sort_values(["week", "game_id"]).reset_index(drop=True)
+
+
+@dataclass
+class Experiment:
+    """Files and tables from one finished experiment."""
+
+    output: Path
+    comparison: pd.DataFrame
+    summary: pd.DataFrame
+    games: pd.DataFrame
+    manifest: dict
+
+
+def load_experiment(output: Path) -> Experiment:
+    return Experiment(output, pd.read_csv(output / "comparison.csv"), pd.read_csv(output / "summary.csv"),
+                      pd.read_csv(output / "games.csv"), json.loads((output / "manifest.json").read_text(encoding="utf-8")))
+
+
+def season_root(season: int, bundle_hash: str) -> Path:
+    return ROOT / "outputs/season" / str(season) / bundle_hash[:12]
+
+
+def saved_experiments(season: int, bundle_hash: str) -> list[Path]:
+    """Finished experiments for this bundle, newest first."""
+    folders = (season_root(season, bundle_hash) / "experiments").glob("*")
+    finished = [folder for folder in folders if (folder / "manifest.json").is_file() and (folder / "games.csv").is_file()]
+    return sorted(finished, key=lambda folder: (folder / "manifest.json").stat().st_mtime, reverse=True)
+
+
+def run_experiment(runtime, artifact_dir: Path, bundle_hash: str, season: int, moves: list[Move], *, first_week: int | None = None,
+                   name: str | None = None, simulations: int = 100, seasons: int = 10000, backend: str = "local",
+                   parallelism: int = 8, seed: int = 42, on_stage=None, on_progress=None) -> Experiment:
+    """Compare `moves` with the baseline season. The baseline and each move's games are cached, so repeats are quick."""
+    stage = on_stage or (lambda text: print(text, flush=True))
+    schedule, roster, _ = _load_inputs(season, artifact_dir / "weekly_inputs")
+    remaining = schedule[schedule.home_score.isna()].sort_values("game_id")
+    if remaining.empty:
+        raise ValueError(f"No unplayed games left in {season}")
+    first_week = first_week or int(remaining.week.min())
+    root = season_root(season, bundle_hash)
+    run_id = f"season-{season}-{bundle_hash[:12]}"
+    options = dict(backend=backend, parallelism=parallelism, run_id=run_id, seed=seed, on_progress=on_progress)
+    tag = f"sims{simulations}-seed{seed}"
+    stage(f"Baseline: {len(remaining)} unplayed games from week {int(remaining.week.min())}; bundle {bundle_hash[:12]}")
+    baseline = cached_scores(root / f"baseline-{tag}.parquet", lambda: simulate(
+        runtime, artifact_dir, bundle_hash, schedule, roster, remaining, [], simulations, **options))
+    moved, affected = apply_moves(roster, schedule, moves, first_week)
+    changed = remaining[(remaining.home_team.isin(affected) | remaining.away_team.isin(affected))
+                        & remaining.week.ge(first_week)]
+    key = canonical_hash([[asdict(move) for move in moves], first_week, tag])[:12]
+    name = name or "-".join(re.sub(r"[^a-z0-9]+", "", move.player.lower()) + "-" + (move.team or "out").lower()
+                            for move in moves)
+    output = root / "experiments" / name
+    stage(f"Re-simulating {len(changed)} games for {', '.join(sorted(affected))}")
+    rerun = cached_scores(root / f"experiment-{key}-{tag}.parquet", lambda: simulate(
+        runtime, artifact_dir, bundle_hash, schedule, moved, changed, moves, simulations, **options))
+    stage(f"Assembling {seasons:,} seasons")
+    base = play_seasons(schedule, baseline, seasons, seed)
+    scores = pd.concat([baseline[~baseline.game_id.isin(changed.game_id)], rerun], ignore_index=True)
+    experiment = play_seasons(schedule, scores, seasons, seed)
+    output.mkdir(parents=True, exist_ok=True)
+    summarize(*base).to_csv(root / "baseline_summary.csv", index=False)
+    summarize(*experiment).to_csv(output / "summary.csv", index=False)
+    compare(base, experiment).sort_values("playoffs_change", key=abs, ascending=False).to_csv(output / "comparison.csv", index=False)
+    game_changes(baseline, rerun, schedule).to_csv(output / "games.csv", index=False)
+    (output / "manifest.json").write_text(json.dumps({
+        "season": season, "bundle_hash": bundle_hash, "moves": [asdict(move) for move in moves],
+        "first_week": first_week, "affected_teams": sorted(affected), "games_resimulated": changed.game_id.tolist(),
+        "simulations_per_game": simulations, "seasons": seasons, "seed": seed, "run_id": run_id,
+        "standard_errors": "paired season draws only; game-simulation noise is shared through common seeds",
+    }, indent=2), encoding="utf-8")
+    return load_experiment(output)
+
+
 def main():
     parser = argparse.ArgumentParser(description="Simulate the rest of a season, optionally with roster moves")
     parser.add_argument("--season", type=int, default=2026)
@@ -237,51 +334,27 @@ def main():
     validate_bundle(artifact_dir)
     bundle_hash = verify_bundle_hash(artifact_dir)
     runtime = RidgeRuntime(artifact_dir, strict_schema=True)
-    schedule, roster, _ = _load_inputs(args.season, artifact_dir / "weekly_inputs")
-    remaining = schedule[schedule.home_score.isna()].sort_values("game_id")
-    first_week = args.from_week or int(remaining.week.min())
     moves = [parse_move(text) for text in args.move]
-    root = ROOT / "outputs/season" / str(args.season) / bundle_hash[:12]
-    run_id = f"season-{args.season}-{bundle_hash[:12]}"
-    options = dict(backend=args.backend, parallelism=args.parallelism, run_id=run_id, seed=args.seed)
-    tag = f"sims{args.simulations}-seed{args.seed}"
-    print(f"{len(remaining)} unplayed games from week {int(remaining.week.min())}; bundle {bundle_hash[:12]}")
-
-    baseline = cached_scores(root / f"baseline-{tag}.parquet", lambda: simulate(
-        runtime, artifact_dir, bundle_hash, schedule, roster, remaining, [], args.simulations, **options))
-    base = play_seasons(schedule, baseline, args.seasons, args.seed)
-    summarize(*base).to_csv(root / "baseline_summary.csv", index=False)
     if not moves:
-        print(summarize(*base).to_string(index=False, float_format=lambda value: f"{value:.3f}"))
+        schedule, roster, _ = _load_inputs(args.season, artifact_dir / "weekly_inputs")
+        remaining = schedule[schedule.home_score.isna()].sort_values("game_id")
+        root = season_root(args.season, bundle_hash)
+        baseline = cached_scores(root / f"baseline-sims{args.simulations}-seed{args.seed}.parquet", lambda: simulate(
+            runtime, artifact_dir, bundle_hash, schedule, roster, remaining, [], args.simulations, backend=args.backend,
+            parallelism=args.parallelism, run_id=f"season-{args.season}-{bundle_hash[:12]}", seed=args.seed))
+        table = summarize(*play_seasons(schedule, baseline, args.seasons, args.seed))
+        table.to_csv(root / "baseline_summary.csv", index=False)
+        print(table.to_string(index=False, float_format=lambda value: f"{value:.3f}"))
         return
-
-    moved, affected = apply_moves(roster, schedule, moves, first_week)
-    changed = remaining[(remaining.home_team.isin(affected) | remaining.away_team.isin(affected))
-                        & remaining.week.ge(first_week)]
-    key = canonical_hash([[asdict(move) for move in moves], first_week, tag])[:12]
-    name = args.name or "-".join(re.sub(r"[^a-z0-9]+", "", move.player.lower()) + "-" + (move.team or "out").lower()
-                                 for move in moves)
-    output = root / "experiments" / name
-    print(f"Re-simulating {len(changed)} games for {', '.join(sorted(affected))}")
-    rerun = cached_scores(root / f"experiment-{key}-{tag}.parquet", lambda: simulate(
-        runtime, artifact_dir, bundle_hash, schedule, moved, changed, moves, args.simulations, **options))
-    scores = pd.concat([baseline[~baseline.game_id.isin(changed.game_id)], rerun], ignore_index=True)
-    experiment = play_seasons(schedule, scores, args.seasons, args.seed)
-    output.mkdir(parents=True, exist_ok=True)
-    summarize(*experiment).to_csv(output / "summary.csv", index=False)
-    comparison = compare(base, experiment).sort_values("playoffs_change", key=abs, ascending=False)
-    comparison.to_csv(output / "comparison.csv", index=False)
-    (output / "manifest.json").write_text(json.dumps({
-        "season": args.season, "bundle_hash": bundle_hash, "moves": [asdict(move) for move in moves],
-        "first_week": first_week, "affected_teams": sorted(affected), "games_resimulated": changed.game_id.tolist(),
-        "simulations_per_game": args.simulations, "seasons": args.seasons, "seed": args.seed, "run_id": run_id,
-        "standard_errors": "paired season draws only; game-simulation noise is shared through common seeds",
-    }, indent=2), encoding="utf-8")
-    shown = comparison[comparison.team.isin(affected) | comparison.playoffs_change.abs().ge(0.01)]
+    result = run_experiment(runtime, artifact_dir, bundle_hash, args.season, moves, first_week=args.from_week, name=args.name,
+                            simulations=args.simulations, seasons=args.seasons, backend=args.backend,
+                            parallelism=args.parallelism, seed=args.seed)
+    comparison = result.comparison
+    shown = comparison[comparison.team.isin(result.manifest["affected_teams"]) | comparison.playoffs_change.abs().ge(0.01)]
     columns = ["team", "wins_base", "wins_experiment", "wins_change", "playoffs_base", "playoffs_experiment",
                "playoffs_change", "playoffs_se", "division_title_change", "bye_change"]
     print(shown[columns].to_string(index=False, float_format=lambda value: f"{value:+.3f}"))
-    print(f"Wrote {output}")
+    print(f"Wrote {result.output}")
 
 
 if __name__ == "__main__":

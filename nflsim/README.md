@@ -405,3 +405,9 @@ A network's team-level predictions move with its random seed about as much as wi
 `python -m nflsim.models.seed_average` averages several seeds' probabilities and fits one network of the same
 shape to the average, so the sim still runs one network per decision. The output starts as a copy of the base refit
 and packages like any other refit. Each model's `{model}_seed_average.json` records its seeds.
+
+## Season QB experiments
+
+The Game Simulator dashboard has a Season QB Experiments page (`nflsim/dashboard/pages/Season_QB_Experiments.py`). Pick a team, a new
+starter and a first week to compare the rest of the season with the baseline. It calls `nflsim.sim.season.run_experiment`, the same
+code as `python -m nflsim.sim.season --move`, and saves results under `outputs/season/<season>/<bundle>/experiments`.
