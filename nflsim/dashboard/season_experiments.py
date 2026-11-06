@@ -9,6 +9,7 @@ import streamlit as st
 
 from nflsim import ui
 from nflsim.bundle import verify_bundle_hash
+from nflsim.bundle_labels import all_bundles, bundle_label
 from nflsim.features.game_inputs import slot_assignments
 from nflsim.sim import standings
 from nflsim.sim.runtime import RidgeRuntime
@@ -16,8 +17,20 @@ from nflsim.sim.season import Move, latest_bundle, load_experiment, quarterbacks
 from nflsim.sim.synthetic_games import _load_inputs, snapshot_depth
 
 SEASON = 2026
+BUNDLE_HELP = "Which version of the models to use. Each is named for what changed. 'Current' is the newest one that can simulate upcoming games."
 LIMITS = ("The new QB's own inputs and player value replace the old QB's. The team's offense ratings do not change, so they still "
           "reflect the old QB's games, and a backup's rate stats can rest on few plays.")
+
+
+@st.cache_resource(show_spinner="Checking the bundle's files...")
+def verified_hash(path: str) -> str:
+    return verify_bundle_hash(Path(path))
+
+
+@st.cache_data(show_spinner=False, ttl=600)
+def bundle_choices() -> dict[str, str]:
+    current = latest_bundle()
+    return {str(info.path.resolve()): bundle_label(info, current) for info in all_bundles() if info.can_simulate_upcoming}
 
 
 @st.cache_resource(show_spinner="Loading model bundle...")
@@ -98,16 +111,17 @@ def describe(path: str, names: dict[str, str]) -> str:
 
 def main():
     ui.page("Season QB Experiments")
-    artifact_dir = latest_bundle().resolve()
-    bundle_hash = verify_bundle_hash(artifact_dir)
+    choices = bundle_choices()
+    artifact_dir = Path(st.sidebar.selectbox("Model bundle", list(choices), format_func=choices.get, help=BUNDLE_HELP))
+    bundle_hash = verified_hash(str(artifact_dir))
     ui.header("Season QB experiments", "Simulate the rest of the season with a different starter.",
-              {"Bundle": bundle_hash[:12], "Season": SEASON})
+              {"Bundle": choices[str(artifact_dir)].split(" · ")[0], "Season": SEASON})
     qbs, remaining, current = season_state(str(artifact_dir), bundle_hash)
     names = dict(zip(qbs.player_id, qbs.player_name))
     labels = {row.player_id: f"{row.player_name} ({row.team})" for row in qbs.itertuples()}
 
     teams = sorted(standings.TEAMS)
-    team = st.sidebar.selectbox("Team", teams)
+    team = st.sidebar.selectbox("Team", teams, help='The team getting a new starting quarterback.')
     starter = current.get(team)
     st.sidebar.caption(f"Current starter: {names.get(starter, starter)}")
     backups = qbs[qbs.team.eq(team) & qbs.player_id.ne(starter)].player_id.tolist()
@@ -115,16 +129,16 @@ def main():
     alternate = st.sidebar.selectbox("New starter", backups + elsewhere, format_func=labels.get,
                                      help="This team's backups come first. A QB from another team leaves that team too.")
     weeks = sorted(remaining[remaining.home_team.eq(team) | remaining.away_team.eq(team)].week.astype(int).unique())
-    first_week = st.sidebar.selectbox("Starts from week", weeks, disabled=not weeks)
-    simulations = st.sidebar.select_slider("Simulations per game", [40, 100, 200, 500, 1000], value=100)
-    seasons = st.sidebar.select_slider("Seasons", [2000, 5000, 10000, 20000], value=10000)
+    first_week = st.sidebar.selectbox("Starts from week", weeks, disabled=not weeks, help='First game the new starter plays. Earlier games keep the current starter.')
+    simulations = st.sidebar.select_slider("Simulations per game", [40, 100, 200, 500, 1000], value=100, help='Simulations of each remaining game. 100 is a good default; use 500 or more for numbers you plan to rely on.')
+    seasons = st.sidebar.select_slider("Seasons", [2000, 5000, 10000, 20000], value=10000, help='Full seasons assembled from those game simulations to get standings and playoff odds. This step is quick.')
     backend = st.sidebar.radio("Run on", ["local", "modal"], horizontal=True,
                                help="Modal needs this bundle uploaded first, from Data operations on the simulator page.")
-    parallelism = st.sidebar.slider("Parallel workers", 1, 64 if backend == "modal" else 12, 8)
+    parallelism = st.sidebar.slider("Parallel workers", 1, 64 if backend == "modal" else 12, 8, help="Simulations running at once. More is faster, up to your PC's limit.")
     st.sidebar.caption("The first run for a bundle and simulation count also builds the baseline season. Later runs reuse it and "
                        "re-simulate only the teams involved. Stay on this page while it runs.")
 
-    if st.sidebar.button("Run experiment", type="primary", disabled=not weeks):
+    if st.sidebar.button("Run experiment", type="primary", disabled=not weeks, help='Simulate the affected games and compare with the baseline. The first run on a bundle or new forecast also simulates every remaining game.'):
         status, bar = st.empty(), st.progress(0.0)
         try:
             result = run_experiment(
@@ -147,7 +161,7 @@ def main():
         return
     chosen = st.session_state.get("season_experiment")
     picked = st.selectbox("Saved experiments", saved, index=saved.index(chosen) if chosen in saved else 0,
-                          format_func=lambda path: describe(path, names))
+                          format_func=lambda path: describe(path, names), help='Finished experiments on this bundle, newest first.')
     show(load_experiment(Path(picked)), names)
 
 
