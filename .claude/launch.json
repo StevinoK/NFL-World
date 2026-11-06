@@ -1,0 +1,29 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "nflsim-dashboard",
+      "runtimeExecutable": "./NFL.venv/Scripts/python.exe",
+      "runtimeArgs": ["-m", "nflsim.dashboard.run", "--server.port", "8517", "--server.headless", "true"],
+      "port": 8517
+    },
+    {
+      "name": "dfs-dashboard",
+      "runtimeExecutable": "./NFL.venv/Scripts/python.exe",
+      "runtimeArgs": ["-m", "streamlit", "run", "nflsim/dfs/dashboard.py", "--server.port", "8518", "--server.headless", "true"],
+      "port": 8518
+    },
+    {
+      "name": "ridge-explorer",
+      "runtimeExecutable": "./NFL.venv/Scripts/python.exe",
+      "runtimeArgs": ["-m", "streamlit", "run", "nflsim/ridge/explorer.py", "--server.port", "8519", "--server.headless", "true"],
+      "port": 8519
+    },
+    {
+      "name": "player-estimates",
+      "runtimeExecutable": "./NFL.venv/Scripts/python.exe",
+      "runtimeArgs": ["-m", "streamlit", "run", "player_value/explorer.py", "--server.port", "8520", "--server.headless", "true"],
+      "port": 8520
+    }
+  ]
+}

@@ -1,6 +1,5 @@
-# Required game-simulation runtime bundle.
-artifacts/runtime/*.pt filter=lfs diff=lfs merge=lfs -text
-artifacts/runtime/*.pkl filter=lfs diff=lfs merge=lfs -text
-artifacts/runtime/*.csv filter=lfs diff=lfs merge=lfs -text
-artifacts/runtime/*.json filter=lfs diff=lfs merge=lfs -text
-play_type_training.csv filter=lfs diff=lfs merge=lfs -text
+# Legacy Bayesian game-simulation runtime bundle (archived; read by nflsim config snapshots and guards).
+archive/bayesian_sim/artifacts/runtime/*.pt filter=lfs diff=lfs merge=lfs -text
+archive/bayesian_sim/artifacts/runtime/*.pkl filter=lfs diff=lfs merge=lfs -text
+archive/bayesian_sim/artifacts/runtime/*.csv filter=lfs diff=lfs merge=lfs -text
+archive/bayesian_sim/artifacts/runtime/*.json filter=lfs diff=lfs merge=lfs -text

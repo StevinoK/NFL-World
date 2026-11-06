@@ -1,9 +1,0 @@
-check,value,status,details
-schema_issues_count,2.0,warn,target: adjusted runtime embed columns to latent_dim 1: ['target_embed_1']; rusher: adjusted runtime embed columns to latent_dim 1: ['rb_target_embed_1']
-pass_attempt_invariant_violations,0.0,ok,expects pass_attempt_delta + scramble == 0
-playcall_weighted_pass_rate_mae,0.07762653660652181,ok,bucket calibration error
-red_zone_pass_flip_present,1.0,info,1 means logic is present in runtime
-pass_outcome_reweight_present,1.0,info,1 means logic is present in runtime
-rush_boost_present,1.0,info,1 means logic is present in runtime
-yac_boost_present,1.0,info,1 means logic is present in runtime
-punt_distance_cap_present,1.0,info,1 means logic is present in runtime

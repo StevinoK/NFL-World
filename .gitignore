@@ -27,6 +27,11 @@ weighted_rolling_full/
 weighted_rolling_smoke/
 yac_ordinal_sweep_*/
 outputs/
+# Plus-minus estimates are nflsim inputs and stay tracked; fitted box-model caches and plots do not.
+!player_value/outputs/
+player_value/outputs/models/
+player_value/outputs/*.png
+player_value/outputs/*.tmp
 
 # Local data copied from external sources or rebuilt by scripts
 player_stats_wide.csv
@@ -36,3 +41,5 @@ wr_means.csv
 wr_covs.csv
 rb_means.csv
 rb_covs.csv
+# Third-party Madden ratings (no license; local use only)
+data/madden/

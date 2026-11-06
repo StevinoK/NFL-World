@@ -2,48 +2,70 @@
   "version": "2.0.0",
   "tasks": [
     {
-      "label": "Run Feature Dashboard",
+      "label": "Sim: dashboard",
       "type": "process",
-      "command": "${config:python.defaultInterpreterPath}",
-      "args": ["run_feature_dashboard.py"],
+      "command": "${workspaceFolder}\\NFL.venv\\Scripts\\python.exe",
+      "args": ["-m", "nflsim.dashboard.run"],
+      "options": { "cwd": "${workspaceFolder}" },
       "group": "build",
       "isBackground": true,
       "problemMatcher": []
     },
     {
-      "label": "Run Game Sim Dashboard",
+      "label": "Sim: ridge explorer",
       "type": "process",
-      "command": "${config:python.defaultInterpreterPath}",
-      "args": ["run_game_sim_dashboard.py"],
+      "command": "${workspaceFolder}\\NFL.venv\\Scripts\\python.exe",
+      "args": ["-m", "streamlit", "run", "nflsim/ridge/explorer.py"],
+      "options": { "cwd": "${workspaceFolder}" },
       "group": "build",
       "isBackground": true,
       "problemMatcher": []
     },
     {
-      "label": "Run DFS Dashboard",
+      "label": "Sim: DFS dashboard",
       "type": "process",
-      "command": "${config:python.defaultInterpreterPath}",
-      "args": ["run_dfs_dashboard.py"],
+      "command": "${workspaceFolder}\\NFL.venv\\Scripts\\python.exe",
+      "args": ["-m", "nflsim.dfs.run"],
+      "options": { "cwd": "${workspaceFolder}" },
       "group": "build",
       "isBackground": true,
       "problemMatcher": []
     },
     {
-      "label": "Run Game Sim Results Dashboard",
+      "label": "Sim: tests",
       "type": "process",
-      "command": "${config:python.defaultInterpreterPath}",
-      "args": ["run_game_sim_results_dashboard.py"],
+      "command": "${workspaceFolder}\\NFL.venv\\Scripts\\python.exe",
+      "args": ["-m", "pytest", "nflsim/tests", "-q"],
+      "options": { "cwd": "${workspaceFolder}" },
+      "group": "test",
+      "problemMatcher": []
+    },
+    {
+      "label": "Player value: weekly update",
+      "type": "process",
+      "command": "${workspaceFolder}\\NFL_PM.venv\\Scripts\\python.exe",
+      "args": ["-m", "player_value.plus_minus"],
+      "options": { "cwd": "${workspaceFolder}" },
+      "group": "build",
+      "problemMatcher": []
+    },
+    {
+      "label": "Player value: explorer",
+      "type": "process",
+      "command": "${workspaceFolder}\\NFL_PM.venv\\Scripts\\python.exe",
+      "args": ["-m", "player_value.run_explorer"],
+      "options": { "cwd": "${workspaceFolder}" },
       "group": "build",
       "isBackground": true,
       "problemMatcher": []
     },
     {
-      "label": "Simulate Teams vs Synthetic Opponent",
+      "label": "Player value: tests",
       "type": "process",
-      "command": "${config:python.defaultInterpreterPath}",
-      "args": ["simulate_synthetic_home_games.py", "--week", "1", "--simulations", "200", "--workers", "4"],
-      "group": "build",
-      "isBackground": false,
+      "command": "${workspaceFolder}\\NFL_PM.venv\\Scripts\\python.exe",
+      "args": ["-m", "unittest", "discover", "-s", "player_value/tests", "-t", ".", "-q"],
+      "options": { "cwd": "${workspaceFolder}" },
+      "group": "test",
       "problemMatcher": []
     }
   ]

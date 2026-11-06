@@ -1,0 +1,7 @@
+{
+  "bundle_hash": "8580bb36570bee0ccef4ce5c31eb8c7599066d8891fba67233c7ccc42be711a7",
+  "environment": null,
+  "path": "/bundles/8580bb36570bee0ccef4ce5c31eb8c7599066d8891fba67233c7ccc42be711a7/runtime",
+  "redeploy_required": false,
+  "volume": "nfl-ridge-game-sim-artifacts"
+}
