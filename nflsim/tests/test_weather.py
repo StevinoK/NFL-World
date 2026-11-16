@@ -8,6 +8,7 @@ def test_weather_features_scale_outdoor_inputs_and_gate_indoors():
         "weather_temp_delta": -1.0,
         "weather_wind_speed": 1.0,
         "weather_missing": 0.0,
+        "weather_precipitation": 0.0,
     }
     assert weather_features({"roof": "dome", "temp": 10, "wind": 60}) == dict.fromkeys(WEATHER_COLUMNS, 0.0)
 
@@ -18,6 +19,7 @@ def test_missing_or_unknown_weather_is_not_silently_treated_as_calm():
         "weather_temp_delta": 0.0,
         "weather_wind_speed": 0.0,
         "weather_missing": 1.0,
+        "weather_precipitation": 0.0,
     }
     assert weather_features({"roof": None, "temp": 55, "wind": 12})["weather_missing"] == 1.0
 

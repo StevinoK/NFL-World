@@ -22,7 +22,7 @@ PAGES = {
     ],
     "Results": [
         st.Page(DASHBOARD / "weekly_results.py", title="Weekly Matchups", url_path="matchups", default=True),
-        st.Page(DASHBOARD / "synthetic_results.py", title="Synthetic Report", url_path="synthetic"),
+        st.Page(DASHBOARD / "synthetic_results.py", title="League Ratings", url_path="synthetic"),
     ],
     "Tools": [
         st.Page(REPO / "nflsim/dfs/dashboard.py", title="DFS Optimizer", url_path="dfs"),

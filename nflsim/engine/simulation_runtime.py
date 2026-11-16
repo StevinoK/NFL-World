@@ -1062,6 +1062,47 @@ class Team:
         return random.choice(filtered) if filtered else None
 
 
+CLOCK_FIXES_ENV = "NFLSIM_CLOCK_FIXES"
+_CLOCK_FIXES: Dict[str, Any] = {}
+
+
+CLOCK_FIXES_DEFAULT = Path(__file__).resolve().parents[1] / "config" / "clock_fixes.json"
+
+
+def clock_fixes() -> Optional[Dict[str, Any]]:
+    """Overtime and kneel-downs, from nflsim/config/clock_fixes.json (built by nflsim/sim/clock_settings.py).
+    NFLSIM_CLOCK_FIXES names another settings file, or "off" for the old sim (no overtime, no kneels)."""
+    import os
+
+    path = os.environ.get(CLOCK_FIXES_ENV) or str(CLOCK_FIXES_DEFAULT)
+    if path.lower() in {"off", "0", "none"}:
+        return None
+    if path not in _CLOCK_FIXES:
+        _CLOCK_FIXES[path] = json.loads(Path(path).read_text(encoding="utf-8"))
+    return _CLOCK_FIXES[path]
+
+
+def _binned_rate(table: List[Dict[str, Any]], value: float) -> float:
+    for cell in table:
+        if value <= cell["upper"]:
+            return float(cell["rate"])
+    return 0.0
+
+
+def kneel_chance(fixes: Dict[str, Any], quarter: int, clock: float, down: int, lead: float, yards_to_goal: float) -> float:
+    """How often the offense kneels: ahead late in the fourth quarter, or running out the first half. The rates were
+    measured on the last 200 seconds of a half, so earlier snaps never kneel."""
+    if clock > 200:
+        return 0.0
+    if quarter == 4 and lead > 0:
+        return _binned_rate(fixes["q4_lead_by_slack"], clock - 40 * (4 - down))
+    if quarter == 2:
+        for cell in fixes["q2_by_yards_and_seconds"]:
+            if yards_to_goal <= cell["yards_upper"]:
+                return _binned_rate(cell["by_seconds"], clock)
+    return 0.0
+
+
 class Play:
     def __init__(self, down: int, distance: int, yardline: int, game: "Game"):
         self.down = down
@@ -1084,12 +1125,11 @@ class Play:
         def _latent_for(model_key: str) -> Optional[np.ndarray]:
             return offense.model_latents.get(model_key)
 
-        defense.stats["pa"] = offense.score - 7 * defense.stats["defensive_touchdown"]
-        offense.stats["pa"] = defense.score - 7 * offense.stats["defensive_touchdown"]
+        self.game.update_points_allowed()
         gc = [
             defense.score,
             self.game.down,
-            3600 - (self.game.quarter - 1) * 900 - (900 - self.game.clock),
+            self.game.game_seconds(),
             offense.score,
             offense.home,
             100 - self.game.yardline,
@@ -1176,7 +1216,7 @@ class Play:
                 gc = [
                     defense.score,
                     np.nan,
-                    3600 - (self.game.quarter - 1) * 900 - (900 - self.game.clock),
+                    self.game.game_seconds(),
                     offense.score,
                     offense.home,
                     15,
@@ -1210,12 +1250,14 @@ class Play:
                 if good:
                     self.game.diagnostics["kick_attempts"]["fg_made"] += 1
                     offense.stats["kick_made"] += 1
-                    if self.game.yardline > 79:
+                    # The kick travels from 7 yards behind the line, and the posts are 10 yards past the goal line.
+                    distance = 117 - self.game.yardline
+                    if distance <= 39:
                         offense.stats["fg 0-39"] += 1
-                    elif self.game.yardline > 69:
+                    elif distance <= 49:
                         offense.stats["fg 40-49"] += 1
                     else:
-                        offense.stats["fg 50-59"] += 1
+                        offense.stats["fg 50-59"] += 1  # DraftKings pays 50+ yards the same, so this bucket includes 60+.
                     offense.score += 3
                     self.description = f"{offense.name} made the kick"
                 else:
@@ -1696,6 +1738,11 @@ class Game:
         self.split_punts = {"punt_distance", "punt_return"} <= set(runtime.model_dict)
         self.halftime_pending = False
         self.opening_receiver: Optional[Team] = None
+        # Overtime (with clock fixes on, the default): who received first, whose possessions are over, and who has the ball.
+        self.overtime_pending = False
+        self.overtime_first: Optional[Team] = None
+        self.overtime_done: List[Team] = []
+        self.overtime_holder: Optional[Team] = None
         self.diagnostics = {
             "play_calls": {"pass": 0, "run": 0, "punt": 0, "kick": 0},
             "pass_outcomes": {"sack": 0, "complete_pass": 0, "interception": 0, "scramble": 0, "incomplete_pass": 0},
@@ -1830,6 +1877,8 @@ class Game:
             "fg_made": float(self.diagnostics["kick_attempts"]["fg_made"]),
             "pat_attempts": float(self.diagnostics["kick_attempts"]["pat_attempt"]),
             "pat_made": float(self.diagnostics["kick_attempts"]["pat_made"]),
+            **({"kneels": float(self.diagnostics.get("kneels", 0)),
+                "overtimes": float(self.diagnostics.get("overtimes", 0))} if clock_fixes() is not None else {}),
             "rush_plays": float(self.diagnostics["yardage"]["rush"]["plays"]),
             "rush_yards_sum": float(self.diagnostics["yardage"]["rush"]["yards"]),
             "complete_pass_plays": float(self.diagnostics["yardage"]["complete_pass"]["plays"]),
@@ -1918,7 +1967,7 @@ class Game:
         """Kick off to the other team, which starts where the kickoff model puts it; a return TD scores 7 and it kicks back."""
         while True:
             receiving = self.team2 if kicking is self.team1 else self.team1
-            state = [kicking.score, 1, 3600 - (self.quarter - 1) * 900 - (900 - self.clock), receiving.score,
+            state = [kicking.score, 1, self.game_seconds(), receiving.score,
                      receiving.home, 35, 10, self.dome, receiving.score - kicking.score]
             start = self.sample_special_teams("kickoff", state, self.special_teams_values(kicking, receiving), receiving)
             self.diagnostics["special_teams"]["kickoffs"] += 1
@@ -1964,7 +2013,7 @@ class Game:
         gc = [
             self.defense.score,
             self.down,
-            3600 - (self.quarter - 1) * 900 - (900 - self.clock),
+            self.game_seconds(),
             self.possession.score,
             self.possession.home,
             100 - self.yardline,
@@ -1998,20 +2047,87 @@ class Game:
         if self.clock <= 0:
             self.advance_quarter()
 
+    def game_seconds(self) -> float:
+        """Seconds left in the game as the play data records them: regulation counts down to 0, overtime from 600."""
+        if self.quarter >= 5:
+            return float(self.clock)
+        return 3600 - (self.quarter - 1) * 900 - (900 - self.clock)
+
     def advance_quarter(self) -> None:
         self.quarter += 1
         if self.quarter == 3 and self.kickoff_model:
             self.halftime_pending = True
+        fixes = clock_fixes()
         if self.quarter <= 4:
             self.clock = 900
+        elif self.quarter == 5 and fixes is not None and self.team1.score == self.team2.score:
+            self.clock = int(fixes.get("overtime_seconds", 600))
+            self.overtime_pending = True
         else:
             self.clock = 0
+
+    def start_overtime(self) -> None:
+        """Coin toss: the winner receives; both teams get a possession (the regular-season rule from 2025)."""
+        self.overtime_pending = False
+        receiving = self.team1 if random.random() < 0.5 else self.team2
+        kicking = self.team2 if receiving is self.team1 else self.team1
+        self.diagnostics["overtimes"] = self.diagnostics.get("overtimes", 0) + 1
+        if self.kickoff_model:
+            self.kickoff(kicking)
+        else:
+            self.possession, self.defense = receiving, kicking
+            self.yardline, self.down, self.distance = 30, 1, 10
+        self.overtime_first = self.possession
+        self.overtime_holder = self.possession
+        self.overtime_done = []
+
+    def overtime_over(self) -> bool:
+        """Whether overtime has been decided. A possession is over once the other team has the ball. The game ends
+        when the scores differ and either the first team is behind (scored on during its own possession), or it has had
+        its possession and the second team is ahead or has had its own."""
+        if self.quarter < 5 or self.overtime_first is None:
+            return False
+        if self.possession is not self.overtime_holder:
+            if self.overtime_holder not in self.overtime_done:
+                self.overtime_done.append(self.overtime_holder)
+            self.overtime_holder = self.possession
+        if self.team1.score == self.team2.score:
+            return False
+        first = self.overtime_first
+        second = self.team2 if first is self.team1 else self.team1
+        if first.score < second.score:
+            return True
+        return first in self.overtime_done and second in self.overtime_done
+
+    def kneel(self) -> None:
+        """Victory formation: the quarterback kneels for a yard loss and the clock runs."""
+        fixes = clock_fixes()
+        elapsed = fixes["kneel_elapsed"]
+        seconds = float(np.random.choice(elapsed["seconds"], p=np.asarray(elapsed["share"]) / np.sum(elapsed["share"])))
+        qb = next((player for player in self.possession.players if player.position == "QB1"), None)
+        yards = float(fixes.get("kneel_yards", -1))
+        if qb is not None:
+            qb.stats["rushing_attempts"] += 1
+            qb.stats["rushing_yards"] += yards
+        self.yardline = float(np.clip(self.yardline + yards, 1, 99))
+        self.diagnostics["kneels"] = self.diagnostics.get("kneels", 0) + 1
+        self.diagnostics["yardage"]["time"]["plays"] += 1
+        self.diagnostics["yardage"]["time"]["seconds"] += seconds
+        self.clock -= seconds
+        if self.down >= 4:
+            self.switch_possession(self.yardline)
+        else:
+            self.down += 1
+            self.distance -= yards
+            self._normalize_down_distance()
+        if self.clock <= 0:
+            self.advance_quarter()
 
     def _penalty_game_state_row(self, extra: Optional[Dict[str, object]] = None) -> Dict[str, object]:
         gc = [
             self.defense.score,
             self.down,
-            3600 - (self.quarter - 1) * 900 - (900 - self.clock),
+            self.game_seconds(),
             self.possession.score,
             self.possession.home,
             100 - self.yardline,
@@ -2128,7 +2244,20 @@ class Game:
                 # The drive in progress ends at the half; the opening kickoff's receiver kicks off.
                 self.halftime_pending = False
                 self.kickoff(self.opening_receiver)
+            if self.overtime_pending:
+                self.start_overtime()
+            if self.overtime_over():
+                self.clock = 0
+                break
             self._normalize_down_distance()
+            fixes = clock_fixes()
+            chance = 0.0 if fixes is None else kneel_chance(
+                fixes, self.quarter, self.clock, self.down, self.possession.score - self.defense.score, 100 - self.yardline)
+            # Draw only when a kneel is possible, so the random stream (and a paired-seed run) matches the plain sim
+            # until the first kneel situation.
+            if chance > 0 and random.random() < chance:
+                self.kneel()
+                continue
             if self.down <= 4:
                 if self._sample_penalty_no_play():
                     self.diagnostics["penalty_no_play_count"] += 1
@@ -2276,17 +2405,29 @@ class Game:
         if self.kickoff_model:
             self.opening_receiver = self.possession
             self.kickoff(self.defense)
-        while self.quarter <= 4 and self.clock > 0:
+        while (self.quarter <= 4 or self.overtime_pending or (self.quarter == 5 and self.overtime_first is not None)) \
+                and (self.clock > 0 or self.overtime_pending):
+            if self.overtime_pending:
+                self.start_overtime()
+            if self.overtime_over():
+                break
             self.simulate_drive(live_pbp=live_pbp, progress=progress, progress_interval=progress_interval)
             if progress and not live_pbp and self.play_number > 0 and self.play_number % max(1, int(progress_interval)) == 0:
                 print(
                     f"[{summary_prefix}] progress: quarter {self.quarter}, clock {self.clock}, plays {self.play_number}",
                     flush=True,
                 )
+        self.update_points_allowed()
         summary = self.build_game_summary()
         if print_summary:
             self.print_game_summary(summary, prefix=summary_prefix)
         return summary
+
+    def update_points_allowed(self) -> None:
+        """Each defense's points allowed for DraftKings: the opponent's score less the touchdowns the opponent's own
+        defense and return teams scored (counted with the extra point), since those came off this team's offense."""
+        for team, opponent in ((self.team1, self.team2), (self.team2, self.team1)):
+            team.stats["pa"] = opponent.score - 7 * opponent.stats.get("defensive_touchdown", 0)
 
     @staticmethod
     def _starting_qb(team: Team) -> Optional[Player]:
@@ -2405,7 +2546,7 @@ class Game:
                 rng = np.random.default_rng(np.random.randint(0, 2**31 - 1))
             game_draw = effects.draw_game(rng)
             for team in (self.team1, self.team2):
-                shifts = effects.team_shifts(game_draw, rng)
+                shifts = effects.team_shifts(game_draw, rng, getattr(self, "rain", 0.0))
                 team.model_latents.update(shifts)
                 team.target_latent = shifts.get("target", team.target_latent)
                 team.rusher_latent = shifts.get("rusher", team.rusher_latent)

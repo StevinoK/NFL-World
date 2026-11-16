@@ -587,9 +587,10 @@ def load_inputs(tables: Path, seasons, player_table: Path | None = None, team_ta
 
 
 def refit_specs(model_dir: Path) -> dict:
-    from nflsim.models.fit_minimal import REFERENCE, game_effects_specs, reduced_spec
+    from nflsim.models.fit_minimal import REFERENCE, apply_dropped_inputs, game_effects_specs, load_dropped_inputs, reduced_spec
     reference = json.loads((REFERENCE / "model_manifest.json").read_text())
     specs = game_effects_specs({model: reduced_spec(model, spec) for model, spec in reference["models"].items()}, reference)
+    specs = apply_dropped_inputs(specs, load_dropped_inputs(model_dir))
     trained = json.loads((model_dir / "reduced_model_manifest.json").read_text())["models"]
     return {model: spec for model, spec in specs.items() if model in trained}
 

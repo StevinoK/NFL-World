@@ -23,10 +23,12 @@ from scipy.ndimage import gaussian_filter
 
 from nflsim import ui
 from nflsim.dashboard.runs import weekly_runs
+from nflsim.sim.market_lines import market_lines
 
 ID_COLUMNS = {"game_id", "week", "simulation", "team", "player_name", "player_id", "position"}
-LEFT_COLOR = "#636EFA"
-RIGHT_COLOR = "#EF553B"
+ui.style_matplotlib()
+LEFT_COLOR = ui.SERIES[0]
+RIGHT_COLOR = ui.SERIES[1]
 # team_stats_wide uses LA/LV; nflverse team_desc historically carries both spellings.
 TEAM_DESC_ALIASES = {"LA": "LAR", "LAR": "LA", "LV": "OAK", "OAK": "LV"}
 # Normalized 0..1 relief over 1-point grid cells needs exaggeration for visible hillshading.
@@ -63,6 +65,20 @@ def team_color(team: str, fallback: str) -> str:
     return colors.get(team) or colors.get(TEAM_DESC_ALIASES.get(team, "")) or fallback
 
 
+@st.cache_data(show_spinner=False)
+def _team_logo_lookup() -> Dict[str, str]:
+    try:
+        desc = nfl.import_team_desc()[["team_abbr", "team_logo_espn"]]
+        return dict(zip(desc["team_abbr"], desc["team_logo_espn"]))
+    except Exception:
+        return {}
+
+
+def team_logo(team: str) -> Optional[str]:
+    logos = _team_logo_lookup()
+    return logos.get(team) or logos.get(TEAM_DESC_ALIASES.get(team, ""))
+
+
 # ------------------------------------------------------------------ data loading
 
 
@@ -75,8 +91,14 @@ def load_week_results(folder: str) -> Tuple[pd.DataFrame, pd.DataFrame]:
 @st.cache_data(show_spinner=False)
 def load_market_lines(seasons: Tuple[int, ...]) -> pd.DataFrame:
     schedule = nfl.import_schedules(list(seasons))
-    columns = ["game_id", "spread_line", "total_line"]
+    columns = ["game_id", "spread_line", "total_line", "gameday", "gametime"]
     return schedule[[column for column in columns if column in schedule.columns]].drop_duplicates("game_id")
+
+
+@st.cache_data(show_spinner="Reading Kalshi and Polymarket...", ttl=300)
+def load_prediction_markets(games: pd.DataFrame) -> Tuple[pd.DataFrame, List[str], str]:
+    lines, errors = market_lines(games)
+    return lines, errors, pd.Timestamp.now(tz="America/New_York").strftime("%b %d, %I:%M %p ET")
 
 
 def attach_market_lines(games_df: pd.DataFrame) -> pd.DataFrame:
@@ -129,31 +151,41 @@ def build_market_summary(games_df: pd.DataFrame) -> pd.DataFrame:
             spread_difference=lambda frame: frame["predicted_spread"] - frame["vegas_spread"],
             total_difference=lambda frame: frame["predicted_total"] - frame["vegas_total"],
         )
+        .merge(
+            games.assign(home_win=(games["predicted_spread"] > 0) + 0.5 * (games["predicted_spread"] == 0))
+            .groupby("game_id", as_index=False)["home_win"].mean(),
+            on="game_id",
+        )
         .sort_values(["week", "away_team", "home_team"], kind="stable")
         .reset_index(drop=True)
     )
 
 
 def _market_comparison_chart(
-    summary: pd.DataFrame, market_column: str, prediction_column: str, title: str
+    summary: pd.DataFrame, market_column: str, prediction_column: str, title: str, value_format: str = ".1f"
 ) -> go.Figure:
     points = summary[[market_column, prediction_column, "away_team", "home_team"]].dropna()
     fig = go.Figure()
     if not points.empty:
         low = float(min(points[market_column].min(), points[prediction_column].min()))
         high = float(max(points[market_column].max(), points[prediction_column].max()))
-        padding = max((high - low) * 0.05, 1.0)
-        bounds = [low - padding, high + padding]
-        fig.add_trace(go.Scatter(x=bounds, y=bounds, mode="lines", name="Agreement", line=dict(color="gray", dash="dash")))
+        bounds = [low - 2, high + 2]
+        gaps = points[prediction_column] - points[market_column]
+        widest = gaps.abs().nlargest(3).index
+        names = points["away_team"] + " @ " + points["home_team"]
+        fig.add_trace(go.Scatter(x=bounds, y=bounds, mode="lines", name="Agreement", hoverinfo="skip", line=dict(color=ui.MUTED, dash="dash", width=1)))
         fig.add_trace(
             go.Scatter(
                 x=points[market_column],
                 y=points[prediction_column],
-                mode="markers",
+                mode="markers+text",
                 name="Games",
-                text=points["away_team"] + " @ " + points["home_team"],
-                hovertemplate="%{text}<br>Vegas: %{x:.1f}<br>Predicted: %{y:.1f}<extra></extra>",
-                marker=dict(color="#168C83", size=9, line=dict(color="white", width=1)),
+                text=names.where(points.index.isin(widest), ""),
+                textposition=["top center" if gap > 0 else "middle left" for gap in gaps],
+                textfont=dict(size=11, color=ui.MUTED),
+                customdata=names,
+                hovertemplate=f"%{{customdata}}<br>Vegas: %{{x:{value_format}}}<br>Ours: %{{y:{value_format}}}<extra></extra>",
+                marker=dict(color=ui.ACCENT, size=9, line=dict(color="white", width=2)),
             )
         )
         fig.update_xaxes(range=bounds)
@@ -161,16 +193,34 @@ def _market_comparison_chart(
     fig.update_layout(
         title=title,
         xaxis_title="Vegas",
-        yaxis_title="Predicted",
+        yaxis_title="Our simulations",
         height=390,
         showlegend=False,
         margin=dict(t=55, r=20, b=55, l=55),
     )
-    return fig
+    return ui.style_plotly(fig)
 
 
 def render_market_summary(games_df: pd.DataFrame) -> None:
     summary = build_market_summary(games_df)
+    market_columns = ["kalshi_spread", "kalshi_home_win", "polymarket_spread", "polymarket_home_win"]
+    schedule = games_df[["game_id", "gameday", "gametime"]].drop_duplicates("game_id") if {"gameday", "gametime"} <= set(games_df.columns) else None
+    markets_note = "Prediction market prices need schedule kickoff times, which aren't available."
+    if schedule is not None:
+        try:
+            lines, errors, read_at = load_prediction_markets(summary[["game_id", "home_team", "away_team"]].merge(schedule, on="game_id"))
+            summary = summary.merge(lines, on="game_id", how="left")
+            markets_note = (
+                f"Kalshi and Polymarket read {read_at}: live before kickoff, the last price before kickoff after that. "
+                "Their spread is the home margin their ladder prices at 50%. Blank means no market or too thin a market."
+            )
+            if errors:
+                st.warning(f"Some prediction market prices couldn't be read: {', '.join(errors)}")
+        except Exception as error:
+            st.warning(f"Could not read prediction markets: {error}")
+    for column in market_columns:
+        if column not in summary.columns:
+            summary[column] = np.nan
     available = summary.dropna(subset=["vegas_spread", "vegas_total"])
     if available.empty:
         st.info("Vegas spread and total lines are not available for these games in the schedule data.")
@@ -189,56 +239,71 @@ def render_market_summary(games_df: pd.DataFrame) -> None:
         help="Mean absolute difference between predicted and Vegas total.",
     )
 
-    st.caption("Spread is home score minus away score; positive values favor the home team. Differences are predicted minus Vegas.")
-    display = available.rename(
-        columns={
-            "week": "Week",
-            "away_team": "Away",
-            "home_team": "Home",
-            "vegas_spread": "Vegas spread",
-            "predicted_spread": "Predicted spread",
-            "spread_difference": "Spread gap",
-            "vegas_total": "Vegas total",
-            "predicted_total": "Predicted total",
-            "total_difference": "Total gap",
-            "simulations": "Sims",
-        }
+    st.caption(
+        f"{int(available['simulations'].max()):,} simulations per game. Spread is home score minus away score, so positive favors the home team. "
+        "Win columns are the home team's, and Poly is Polymarket. Blue favors the home team and orange the away team; totals are blue above the average Vegas total and orange below it. "
+        f"Gaps are ours minus Vegas: blue means we are higher than Vegas, orange lower. {markets_note}"
     )
+    display = available.assign(
+        away_logo=available["away_team"].map(team_logo),
+        home_logo=available["home_team"].map(team_logo),
+        Game=available["away_team"] + " @ " + available["home_team"],
+    ).rename(columns={
+        "week": "Week",
+        "predicted_spread": "Our spread",
+        "vegas_spread": "Vegas spread",
+        "kalshi_spread": "Kalshi spread",
+        "polymarket_spread": "Poly spread",
+        "spread_difference": "Spread gap",
+        "home_win": "Our win",
+        "kalshi_home_win": "Kalshi win",
+        "polymarket_home_win": "Poly win",
+        "predicted_total": "Our total",
+        "vegas_total": "Vegas total",
+        "total_difference": "Total gap",
+    })
+    spreads = ["Our spread", "Vegas spread", "Kalshi spread", "Poly spread"]
+    wins = ["Our win", "Kalshi win", "Poly win"]
+    totals = ["Our total", "Vegas total"]
+    gaps = ["Spread gap", "Total gap"]
+    average_total = float(available["vegas_total"].mean())
+    columns = ["away_logo", "home_logo", "Game", *spreads, "Spread gap", *wins, *totals, "Total gap"]
+    if display["Week"].nunique() > 1:
+        columns.insert(0, "Week")
     st.dataframe(
-        display[
-            [
-                "Week", "Away", "Home", "Vegas spread", "Predicted spread", "Spread gap",
-                "Vegas total", "Predicted total", "Total gap", "Sims",
-            ]
-        ],
+        ui.styled_frame(
+            display[columns],
+            {**{column: ui.signed for column in spreads + gaps}, **{column: ui.percent for column in wins}, **{column: ui.number for column in totals}},
+            {
+                **{column: (0.0, ui.SPREAD_SCALE) for column in spreads},
+                **{column: (0.5, ui.WIN_SCALE) for column in wins},
+                **{column: (average_total, ui.TOTAL_SCALE) for column in totals},
+                **{column: (0.0, ui.GAP_SCALE) for column in gaps},
+            },
+        ),
         hide_index=True,
         width="stretch",
+        height=35 * (len(display) + 1) + 3,
         column_config={
-            column: st.column_config.NumberColumn(format="%.1f")
-            for column in (
-                "Vegas spread", "Predicted spread", "Spread gap", "Vegas total", "Predicted total", "Total gap"
-            )
+            "away_logo": st.column_config.ImageColumn("Away", width="small"),
+            "home_logo": st.column_config.ImageColumn("Home", width="small"),
         },
     )
 
     spread_column, total_column = st.columns(2)
-    spread_column.plotly_chart(
-        _market_comparison_chart(available, "vegas_spread", "predicted_spread", "Spread: Predicted vs Vegas"),
-        use_container_width=True,
-        key="market_spread_comparison",
-    )
-    total_column.plotly_chart(
-        _market_comparison_chart(available, "vegas_total", "predicted_total", "Total: Predicted vs Vegas"),
-        use_container_width=True,
-        key="market_total_comparison",
-    )
+    spread_chart = _market_comparison_chart(available, "vegas_spread", "predicted_spread", "Home spread", "+.1f")
+    total_chart = _market_comparison_chart(available, "vegas_total", "predicted_total", "Total")
+    spread_column.plotly_chart(spread_chart, use_container_width=True, theme=None, key="market_spread_comparison")
+    ui.image_actions(spread_chart, "spread vs market", container=spread_column)
+    total_column.plotly_chart(total_chart, use_container_width=True, theme=None, key="market_total_comparison")
+    ui.image_actions(total_chart, "total vs market", container=total_column)
 
 
 # ------------------------------------------------------------ scorigami contour
 
 
 def render_scorigami(game_games: pd.DataFrame, game_label: str, selected_sims: Optional[Set[int]] = None) -> None:
-    st.header(f"Score Distribution — {game_label}")
+    st.header(f"Score Distribution: {game_label}")
     if selected_sims is not None:
         game_games = game_games[game_games["simulation"].isin(selected_sims)]
     if game_games.empty:
@@ -312,6 +377,7 @@ def render_scorigami(game_games: pd.DataFrame, game_label: str, selected_sims: O
     fig.tight_layout()
 
     st.pyplot(fig)
+    ui.image_actions(fig, f"{away_team} at {home_team} score heatmap")
     plt.close(fig)
 
 
@@ -322,7 +388,7 @@ def render_total_score_margin(
     game_games: pd.DataFrame, game_label: str, selected_sims: Optional[Set[int]] = None
 ) -> None:
     """One total-score bin (width 5) per column; each column is its own horizontal margin histogram."""
-    st.header(f"Total Score vs. Margin — {game_label}")
+    st.header(f"Total Score vs. Margin: {game_label}")
     if selected_sims is not None:
         game_games = game_games[game_games["simulation"].isin(selected_sims)]
     if game_games.empty:
@@ -344,8 +410,8 @@ def render_total_score_margin(
     favorite, spread = (home_team, avg_margin) if avg_margin >= 0 else (away_team, -avg_margin)
     push_note = f", push {push_pct:.1f}%" if push_pct > 0 else ""
     st.caption(
-        f"{n_sims} filtered sims — {home_team} win {home_win_pct:.1f}% / {away_team} win {away_win_pct:.1f}%"
-        f"{push_note} — spread: {favorite} \u2212{spread:.1f}"
+        f"{n_sims} filtered sims: {home_team} win {home_win_pct:.1f}% / {away_team} win {away_win_pct:.1f}%"
+        f"{push_note}, spread: {favorite} \u2212{spread:.1f}"
     )
 
     bin_size = 5
@@ -372,7 +438,7 @@ def render_total_score_margin(
             go.Bar(x=counts, y=margin_centers, orientation="h", marker_color=colors, showlegend=False),
             row=1, col=col,
         )
-        fig.add_hline(y=0, line_dash="dash", line_color="grey", line_width=1, row=1, col=col)
+        fig.add_hline(y=0, line_dash="dash", line_color=ui.MUTED, line_width=1, row=1, col=col)
         fig.update_xaxes(showticklabels=False, row=1, col=col)
 
     fig.update_yaxes(showticklabels=False)
@@ -388,7 +454,7 @@ def render_total_score_margin(
     fig.update_layout(
         bargap=0,
         height=480,
-        margin=dict(r=90),
+        margin=dict(r=130),
         annotations=list(fig.layout.annotations) + [
             dict(
                 text="Total score (5-point bins)", xref="paper", yref="paper",
@@ -396,7 +462,8 @@ def render_total_score_margin(
             ),
         ],
     )
-    st.plotly_chart(fig, use_container_width=True, key="total_score_margin_hist")
+    st.plotly_chart(ui.style_plotly(fig), use_container_width=True, theme=None, key="total_score_margin_hist")
+    ui.image_actions(fig, "total score and margin")
 
 
 # --------------------------------------------------------- player stat histograms
@@ -458,7 +525,7 @@ def build_histogram(full_series: pd.Series, selected_sims: Optional[Set[int]], l
             )
         )
     fig.update_layout(xaxis_title=label, yaxis_title="Count", height=420, showlegend=False)
-    return fig
+    return ui.style_plotly(fig)
 
 
 def _stat_heatmap_edges(values: pd.Series, bins: int = 12, max_integer_bins: int = 24) -> np.ndarray:
@@ -497,7 +564,7 @@ def build_stat_heatmap(
     )
     outcome_percentages = (counts / len(joined) * 100).T
     levels = MaxNLocator(nbins=10).tick_values(0, max(float(outcome_percentages.max()), 1.0))
-    cmap = plt.get_cmap("BuPu")
+    cmap = plt.get_cmap("Blues")
     norm = BoundaryNorm(levels, ncolors=cmap.N, clip=True)
     elevation = outcome_percentages / max(float(outcome_percentages.max()), 1e-9)
     rgb = LightSource(azdeg=315, altdeg=45).shade_rgb(
@@ -631,17 +698,19 @@ def render_receptions_chart(game_players: pd.DataFrame, selected_sims: Optional[
         height=max(320, 26 * len(averages)),
         legend_title="Team",
     )
+    fig.update_yaxes(automargin=True)
 
     sims_label = len(subset["simulation"].unique())
     st.markdown(f"**Average receptions by player ({sims_label} simulations)**")
-    st.plotly_chart(fig, use_container_width=True, key="receptions_chart")
+    st.plotly_chart(ui.style_plotly(fig), use_container_width=True, theme=None, key="receptions_chart")
+    ui.image_actions(fig, "average receptions")
 
 
 @st.fragment  # Picking a player or stat here doesn't redraw the score charts.
 def render_stat_histograms(
     game_players: pd.DataFrame, game_label: str, players: List[str], selected_sims: Optional[Set[int]]
 ) -> None:
-    st.subheader(f"Player Stat Distributions — {game_label}")
+    st.subheader(f"Player Stat Distributions: {game_label}")
     if not players:
         st.info("No player stat data available for this game.")
         return
@@ -667,25 +736,21 @@ def render_stat_histograms(
     right_series = wide_series(game_players, right_player, right_stat)
 
     with left_col:
-        st.plotly_chart(
-            build_histogram(left_series, selected_sims, f"{left_player} {left_stat}", LEFT_COLOR),
-            use_container_width=True,
-            key="hist_left",
-        )
+        left_chart = build_histogram(left_series, selected_sims, f"{left_player} {left_stat}", LEFT_COLOR)
+        st.plotly_chart(left_chart, use_container_width=True, theme=None, key="hist_left")
+        ui.image_actions(left_chart, f"{left_player} {left_stat}")
     with right_col:
-        st.plotly_chart(
-            build_histogram(right_series, selected_sims, f"{right_player} {right_stat}", RIGHT_COLOR),
-            use_container_width=True,
-            key="hist_right",
-        )
+        right_chart = build_histogram(right_series, selected_sims, f"{right_player} {right_stat}", RIGHT_COLOR)
+        st.plotly_chart(right_chart, use_container_width=True, theme=None, key="hist_right")
+        ui.image_actions(right_chart, f"{right_player} {right_stat}")
 
     st.markdown(f"**{left_player} {left_stat} vs. {right_player} {right_stat}**")
-    st.pyplot(
-        build_stat_heatmap(
-            left_series, right_series, selected_sims, f"{left_player} {left_stat}", f"{right_player} {right_stat}"
-        ),
-        width="stretch",
+    heatmap = build_stat_heatmap(
+        left_series, right_series, selected_sims, f"{left_player} {left_stat}", f"{right_player} {right_stat}"
     )
+    st.pyplot(heatmap, width="stretch")
+    ui.image_actions(heatmap, f"{left_player} {left_stat} vs {right_player} {right_stat}")
+    plt.close(heatmap)
 
     render_receptions_chart(game_players, selected_sims)
 

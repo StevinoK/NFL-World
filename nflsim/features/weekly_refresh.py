@@ -6,9 +6,11 @@ from datetime import datetime
 from pathlib import Path
 
 import pandas as pd
+import requests
 
 from nflsim.features.build import build_feature_tables, selection_input_hashes
 from nflsim.bundle import seal_bundle, validate_bundle, verify_bundle_hash
+from nflsim.features.forecast_archive import update_table as update_forecast_archive
 from nflsim.features.input_sources import write_input_sources
 from nflsim.features.builder import canonicalize_teams, skill_roster
 from nflsim.names import row_display_name
@@ -329,6 +331,10 @@ def refresh_weekly_bundle(season: int, base_bundle: Path = ROOT / "artifacts/run
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     work = output_dir(ROOT / "artifacts/weekly_refresh" / f"{season}_{stamp}")
     inputs = prepare_current_season_inputs(season, work / "inputs")
+    try:
+        update_forecast_archive(pd.read_parquet(inputs["schedule.parquet"]))
+    except requests.RequestException as error:  # Newly played games then count as unknown weather until the next refresh.
+        print(f"[weather] forecast archive not updated: {error}", flush=True)
     estimates = load_pm_estimates(pm_dir)
     pm_freshness = check_pm_freshness(
         estimates, pd.read_parquet(inputs["schedule.parquet"]), int(season),

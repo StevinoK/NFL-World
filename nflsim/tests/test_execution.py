@@ -64,7 +64,7 @@ def test_ridge_dispatch_adds_unchanged_fantasy_scoring(monkeypatch, tmp_path):
     assert sum(call["count"] for call in calls) == 2
     assert all(call["bundle_hash"] == bundle for call in calls)
     assert games.game_id.eq("G").all()
-    assert players.fantasy_points.tolist() == [20.0, 20.0]
+    assert players.fantasy_points.tolist() == [23.0, 23.0]  # 300 passing yards earns the 3-point bonus
 
 
 def test_ridge_local_dispatch_uses_requested_process_workers(monkeypatch, tmp_path):
@@ -116,7 +116,7 @@ def test_ridge_local_dispatch_uses_requested_process_workers(monkeypatch, tmp_pa
     assert len(submitted) > 1
     assert sum(task["count"] for task in submitted) == 8
     assert games.simulation.tolist() == list(range(1, 9))
-    assert players.fantasy_points.tolist() == [20.0] * 8
+    assert players.fantasy_points.tolist() == [23.0] * 8
 
 
 def test_dashboard_output_directory_is_user_selected_and_never_overwrites(tmp_path):
@@ -132,7 +132,7 @@ def test_synthetic_save_folder_matches_previous_weekly_output_location():
     from nflsim.engine.defaults import DEFAULT_SIMULATION_OUTPUT_DIR
     from nflsim.paths import ROOT
 
-    assert default_save_folder("Synthetic opponents", 5) == DEFAULT_SIMULATION_OUTPUT_DIR / "synthetic_home_week_05"
-    assert default_save_folder("Synthetic opponents", 12) == DEFAULT_SIMULATION_OUTPUT_DIR / "synthetic_home_week_12"
+    assert default_save_folder("League ratings", 5) == DEFAULT_SIMULATION_OUTPUT_DIR / "synthetic_home_week_05"
+    assert default_save_folder("League ratings", 12) == DEFAULT_SIMULATION_OUTPUT_DIR / "synthetic_home_week_12"
     assert default_save_folder("Single game", 5) == ROOT / "outputs"
     assert default_save_folder("Full week", 5) == ROOT / "outputs"

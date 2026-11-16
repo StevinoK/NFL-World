@@ -18,7 +18,8 @@ def _is_synthetic(folder: Path) -> bool:
         return True
     with open(folder / "games.csv", encoding="utf-8") as games:
         games.readline()
-        return "_SYN_" in games.readline()
+        line = games.readline()
+        return "_SYN_" in line or "_PAIR_" in line
 
 
 def weekly_runs(outputs: Path = OUTPUTS) -> list[Path]:
@@ -29,7 +30,7 @@ def weekly_runs(outputs: Path = OUTPUTS) -> list[Path]:
 
 
 def synthetic_runs(outputs: Path = OUTPUTS) -> list[Path]:
-    """Folders holding a run against the synthetic opponent, newest first."""
+    """Folders holding a league ratings run, newest first."""
     command_line = [folder for folder in outputs.glob("synthetic/*") if (folder / "synthetic_games.csv").is_file()]
     dashboard = [folder for folder in outputs.glob("simulations/synthetic_home_week_*/*") if (folder / "games.csv").is_file()]
     return _newest_first([*command_line, *dashboard])

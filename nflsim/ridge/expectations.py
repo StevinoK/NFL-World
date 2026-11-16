@@ -21,6 +21,7 @@ import numpy as np
 import pandas as pd
 from sklearn.ensemble import HistGradientBoostingClassifier, HistGradientBoostingRegressor
 
+from nflsim.features.game_precipitation import load_table
 from nflsim.ridge.metrics import TARGETS_BY_NAME, RidgeTarget
 
 STATE_FEATURES = (
@@ -125,6 +126,8 @@ def context_features(pbp: pd.DataFrame) -> pd.DataFrame:
     pass_location = pbp["pass_location"].astype("string") if "pass_location" in pbp else pd.Series(pd.NA, index=pbp.index)
     run_location = pbp["run_location"].astype("string") if "run_location" in pbp else pd.Series(pd.NA, index=pbp.index)
     run_gap = pbp["run_gap"].astype("string") if "run_gap" in pbp else pd.Series(pd.NA, index=pbp.index)
+    measured = load_table().set_index("game_id")
+    games = pbp["game_id"].astype(str) if "game_id" in pbp else pd.Series("", index=pbp.index)
     return pd.DataFrame({
         "ctx_outdoor": outdoor.astype(float),
         # Indoor games are played in controlled conditions: neutral temperature, no wind or precipitation.
@@ -133,6 +136,9 @@ def context_features(pbp: pd.DataFrame) -> pd.DataFrame:
         "ctx_humidity": humidity.where(outdoor, 50.0),
         "ctx_rain": (outdoor & text.str.contains(PRECIPITATION_RAIN, na=False) & ~clear).astype(float),
         "ctx_snow": (outdoor & text.str.contains(PRECIPITATION_SNOW, na=False) & ~clear).astype(float),
+        # Amounts that fell during the game. Blank when unmeasured; the boosted trees handle that.
+        "ctx_rain_mm": games.map(measured.rain_mm).astype(float).where(outdoor, 0.0),
+        "ctx_snow_cm": games.map(measured.snow_cm).astype(float).where(outdoor, 0.0),
         "ctx_turf": surface.str.contains(TURF, na=False).astype(float),
         "pass_left": pass_location.eq("left").astype(float).where(pass_location.notna()),
         "pass_middle": pass_location.eq("middle").astype(float).where(pass_location.notna()),

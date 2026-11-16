@@ -133,8 +133,10 @@ def player_series(data, player_id):
 def estimate_chart(rows):
     import plotly.graph_objects as go
 
+    from nflsim import ui
+
     figure = go.Figure()
-    colors = ('#2a78d6', '#eb6834', '#1baf7a', '#eda100', '#e87ba4', '#008300', '#6250d6', '#e34948')
+    colors = ui.SERIES
     keys = ['position', 'season', 'team', 'estimate_kind', 'segment']
     for trace_index, (identity, series) in enumerate(rows.groupby(keys, sort=False)):
         position, season, team, kind, segment = identity
@@ -150,20 +152,16 @@ def estimate_chart(rows):
                            '<br>n_on: %{customdata[4]}<extra></extra>'),
         ))
     kinds = sorted(rows['estimate_kind'].unique())
+    ui.style_plotly(figure)
     figure.update_layout(
-        height=470, paper_bgcolor='white', plot_bgcolor='white',
-        font={'family': "Inter, 'Segoe UI', system-ui, sans-serif", 'color': '#1d2327', 'size': 12},
+        height=470,
         margin={'l': 80, 'r': 12, 't': 12, 'b': 12},
         xaxis={'title': 'Season / Week', 'type': 'category', 'categoryorder': 'array',
                'categoryarray': rows['period'].drop_duplicates().tolist(),
-               'nticks': 8, 'tickangle': -35, 'showgrid': False, 'linecolor': '#dde1e5',
-               'tickfont': {'color': '#5b6670'}, 'title_font': {'color': '#5b6670'}},
+               'nticks': 8, 'tickangle': -35, 'showgrid': False},
          yaxis={'title': {'text': f"{' / '.join(kinds)} Plus-Minus (EPA/play)", 'standoff': 20},
-             'automargin': True,
-               'gridcolor': '#e8ebee', 'zerolinecolor': '#8a949c', 'zerolinewidth': 1,
-               'tickfont': {'color': '#5b6670'}, 'title_font': {'color': '#5b6670'}},
-        legend={'orientation': 'h', 'y': -0.3, 'x': 0, 'font': {'size': 11, 'color': '#5b6670'}},
-        hoverlabel={'bgcolor': 'white', 'bordercolor': '#dde1e5'},
+             'automargin': True, 'zerolinecolor': ui.MUTED, 'zerolinewidth': 1},
+        legend={'orientation': 'h', 'y': -0.3, 'x': 0, 'font': {'size': 11, 'color': ui.MUTED}},
         hovermode='closest',
     )
     return figure
@@ -192,8 +190,9 @@ def main():
     tiles[0].metric(f"Latest ({latest['period']})", f"{latest['estimate']:+.4f}")
     tiles[1].metric('Team / position', f"{latest['team']} · {latest['position']}")
     tiles[2].metric('Weeks estimated', f"{len(rows):,}")
-    st.plotly_chart(estimate_chart(rows), use_container_width=True, theme=None,
-                    config={'displayModeBar': False, 'responsive': True})
+    chart = estimate_chart(rows)
+    st.plotly_chart(chart, use_container_width=True, theme=None, config={'displayModeBar': False, 'responsive': True})
+    ui.image_actions(chart, f"{labels[player_id]} estimate")
 
 
 if __name__ == '__main__':

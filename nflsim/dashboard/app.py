@@ -20,8 +20,8 @@ from nflsim.features.lineup_value import dl_assignments, lineup_values, player_v
 from nflsim.features.player_value import GROUP_COLUMN, GROUP_LIMITS, ROSTER_GROUP
 from nflsim.names import row_display_name
 from nflsim.paths import ROOT, digest
-from nflsim.sim.synthetic_games import (build_synthetic_game, _load_inputs,
-                                            synthetic_game_row, synthetic_team_options)
+from nflsim.sim.synthetic_games import (DEFAULT_SIMULATIONS, build_league_games, _load_inputs, synthetic_game_row,
+                                            synthetic_team_options, team_games, team_table)
 from nflsim.sim.runtime import RidgeRuntime
 from nflsim.bundle import verify_bundle_hash
 from nflsim.bundle_labels import all_bundles, bundle_label as readable_bundle_label
@@ -84,12 +84,12 @@ def _weather_override(game_row, overrides):
     row = game_row.copy()
     game_id = str(row.get("game_id", ""))
     if game_id in overrides:
-        row["temp"], row["wind"] = overrides[game_id]
+        row["temp"], row["wind"], row["precipitation"] = overrides[game_id]
     return row
 
 
 def default_save_folder(mode: str, week: int) -> Path:
-    if mode == "Synthetic opponents":
+    if mode == "League ratings":
         return DEFAULT_SIMULATION_OUTPUT_DIR / f"synthetic_home_week_{int(week):02d}"
     return ROOT / "outputs"
 
@@ -228,12 +228,17 @@ def results_panel(summary, player_rows):
         tiles[3].metric("Spread (home - away)", f"{game.spread_median:+.1f}")
         tiles[4].metric("Total", f"{game.total_median:.1f}")
     number = st.column_config.NumberColumn
-    st.dataframe(summary, hide_index=True, width="stretch", column_config={
-        "game_id": "Game", "week": "Week", "home_team": "Home", "away_team": "Away", "simulations": "Sims",
-        "home_median": number("Home pts", format="%.1f"), "away_median": number("Away pts", format="%.1f"),
-        "spread_median": number("Spread", format="%+.1f"), "total_median": number("Total", format="%.1f"),
-        "home_win_probability": st.column_config.ProgressColumn("Home win", format="percent", min_value=0, max_value=1),
-    })
+    st.dataframe(
+        ui.styled_frame(
+            summary,
+            {"home_median": ui.number, "away_median": ui.number, "spread_median": ui.signed, "total_median": ui.number, "home_win_probability": ui.percent},
+            {"spread_median": (0.0, ui.SPREAD_SCALE), "home_win_probability": (0.5, ui.WIN_SCALE)},
+        ),
+        hide_index=True, width="stretch", column_config={
+            "game_id": "Game", "week": "Week", "home_team": "Home", "away_team": "Away", "simulations": "Sims", "home_median": "Home pts",
+            "away_median": "Away pts", "spread_median": "Spread (home)", "total_median": "Total", "home_win_probability": "Home win",
+        },
+    )
     fantasy = (player_rows.groupby(["team", "position", "player_name"], as_index=False).fantasy_points.mean()
                .sort_values("fantasy_points", ascending=False))
     st.dataframe(fantasy, hide_index=True, width="stretch", column_config={
@@ -303,7 +308,7 @@ def main():
     season = slate_box.selectbox("Season", available_seasons, index=len(available_seasons)-1,
                                  help="Seasons with generated Ridge feature rows.")
     schedule, roster, depth = cached_inputs(int(season), str(artifact_dir))
-    # Synthetic rankings stay free of this week's forecast, so they compare fairly from week to week.
+    # League ratings stay free of this week's forecast, so they compare fairly from week to week.
     synthetic_schedule = schedule.copy()
     with ops_box.expander("Weather forecast", expanded=False):
         st.caption("Upcoming outdoor games use Open-Meteo's forecast for kickoff, saved once a day. Domes and retractable roofs get none.")
@@ -330,9 +335,9 @@ def main():
     game_labels = {f"{row.away_team} @ {row.home_team} ({pd.Timestamp(row.gameday).date()})": row.game_id for row in week_rows.itertuples()}
     selected_label = slate_box.selectbox("Game", list(game_labels), help='The game to simulate when Run type is Single game.')
     selected_id = game_labels[selected_label]
-    mode = slate_box.radio("Run type", ["Single game", "Full week", "Synthetic opponents"], help='Single game: one matchup. Full week: every game this week. Synthetic opponents: each team against the same average opponent, for power rankings.')
+    mode = slate_box.radio("Run type", ["Single game", "Full week", "League ratings"], help='Single game: one matchup. Full week: every game this week. League ratings: each team against the whole league, itself included, for power rankings.')
     with header_slot:
-        ui.header("Game Simulator", "Ridge player-value models: simulate a game, a full week or synthetic opponents.",
+        ui.header("Game Simulator", "Ridge player-value models: simulate a game, a full week or ratings against the whole league.",
                   {"Bundle": choices[str(artifact_dir)].split(" · ")[0], "Season": season,
                    "Week": week, "Mode": mode}, eyebrow="Ridge PV")
         st.caption("Note: the QB team-start count keeps its trained feature contract; its training rows matched players "
@@ -345,7 +350,8 @@ def main():
             outdoor_rows.append({"game_id": str(row.game_id), "away_team": row.away_team, "home_team": row.home_team,
                                  "temp": pd.to_numeric(pd.Series([row.get("temp")]), errors="coerce").iloc[0],
                                  "wind": pd.to_numeric(pd.Series([row.get("wind")]), errors="coerce").iloc[0],
-                                 "source": "Forecast" if row.get("weather_forecast") else "Recorded" if pd.notna(row.get("temp")) else "None"})
+                                 "precipitation": pd.to_numeric(pd.Series([row.get("precipitation")]), errors="coerce").iloc[0],
+                                 "source": "Forecast" if pd.notna(row.get("temp")) else "None"})
     if outdoor_rows:
         with st.expander("Outdoor game weather", expanded=False):
             edited_weather = st.data_editor(
@@ -354,22 +360,23 @@ def main():
                 column_config={
                     "temp": st.column_config.NumberColumn("Temperature (F)", format="%.0f", help="Kickoff temperature. Edit to test other weather."),
                     "wind": st.column_config.NumberColumn("Wind (mph)", format="%.0f", help="Kickoff wind speed. Edit to test other weather."),
-                    "source": st.column_config.TextColumn("Source", help="Forecast: Open-Meteo. Recorded: from the schedule. None: too far ahead, so the model treats the weather as unknown."),
+                    "precipitation": st.column_config.NumberColumn("Precipitation (mm)", format="%.1f", help="Rain and melted snow forecast during the game. Edit to test other weather."),
+                    "source": st.column_config.TextColumn("Source", help="Forecast: Open-Meteo, including its archive for past games. None: too far ahead, or before 2018, so the model treats the weather as unknown."),
                 },
                 key=f"weather_{season}_{week}",
             )
             weather_overrides = {
-                str(row.game_id): (float(row.temp), float(row.wind))
+                str(row.game_id): (float(row.temp), float(row.wind), float(row.precipitation))
                 for row in edited_weather.itertuples()
-                if pd.notna(row.temp) and pd.notna(row.wind)
+                if pd.notna(row.temp) and pd.notna(row.wind) and pd.notna(row.precipitation)
             }
-    simulations = int(run_box.number_input("Simulations per game", min_value=1, max_value=10000, value=20, step=5, help='More simulations give steadier results and take proportionally longer. 20 is a quick look; about 2,000 suits a final weekly run.'))
+    simulations = int(run_box.number_input("Simulations per pairing" if mode == "League ratings" else "Simulations per game", min_value=1, max_value=10000, value=DEFAULT_SIMULATIONS if mode == "League ratings" else 20, step=5, help='More simulations give steadier results and take proportionally longer. 20 is a quick look; about 2,000 suits a final weekly run.'))
     backend = run_box.selectbox("Backend", ["Local", "Modal"], help='Local runs on this PC. Modal runs in the cloud, which is much faster for big runs but needs the bundle uploaded first.')
     parallelism = int(run_box.number_input("Workers / containers", min_value=1, value=1 if backend == "Local" else 8, step=1, help="Simulations running at once: CPU workers for Local, cloud containers for Modal. More is faster, up to your PC's limit."))
     use_model_rank = run_box.checkbox("Rank slots using model metrics", value=True, help='Order players within a position by model metrics. Turn off to use the depth chart order.')
-    if mode == "Synthetic opponents":
+    if mode == "League ratings":
         team_options = synthetic_team_options(synthetic_schedule)
-        selected_teams = st.multiselect("Teams", team_options, default=team_options, help='Teams to run against the synthetic opponent.')
+        selected_teams = st.multiselect("Teams", team_options, default=team_options, help='Teams to rate. Each plays the whole league at a neutral site in mild weather, and the weather table does not apply.')
     else:
         selected_teams = []
     customize_lineup = st.checkbox("Customize depth chart and player inputs", value=mode == "Single game",
@@ -377,7 +384,7 @@ def main():
     custom_assignments = {}
     custom_player_overrides = {}
     custom_dl, custom_pv, lineup_pv = {}, {}, {}
-    if customize_lineup and mode in {"Single game", "Synthetic opponents"}:
+    if customize_lineup and mode in {"Single game", "League ratings"}:
         if mode == "Single game":
             customize_teams = [str(week_rows.loc[week_rows.game_id.astype(str).eq(str(selected_id)), "home_team"].iloc[0]),
                                str(week_rows.loc[week_rows.game_id.astype(str).eq(str(selected_id)), "away_team"].iloc[0])]
@@ -386,12 +393,12 @@ def main():
             if not selected_teams:
                 customize_teams = []
             else:
-                customize_team = st.selectbox("Customize this synthetic team", selected_teams, help='The team whose lineup you want to change in this synthetic run.')
+                customize_team = st.selectbox("Customize this team", selected_teams, help='The team whose lineup you want to change in this run, in all of its games.')
                 customize_teams = [customize_team]
             custom_game_row = (synthetic_game_row(synthetic_schedule, customize_teams[0], int(week))
                                if customize_teams else week_rows.iloc[0])
         kickoff = pd.Timestamp(custom_game_row.gameday)
-        custom_key = f"{season}_{week}_{selected_id if mode == 'Single game' else 'synthetic'}"
+        custom_key = f"{season}_{week}_{selected_id if mode == 'Single game' else 'league'}"
         for team in customize_teams:
             with st.expander(f"{team} depth chart", expanded=False):
                 custom_assignments[team] = lineup_controls(
@@ -410,7 +417,7 @@ def main():
                 selected_override = player_stat_editor(runtime, players, custom_assignments, kickoff, custom_key)
                 custom_player_overrides = selected_override
     run_id = output_box.text_input("Run ID", f"ridge-{season}-w{int(week):02d}-{datetime.now():%Y%m%d-%H%M%S}", key="ridge_run_id", help="Name of this run's output folder. The default includes the date and time.")
-    save_key = f"ridge_synthetic_save_folder_{int(week):02d}" if mode == "Synthetic opponents" else "ridge_save_folder"
+    save_key = f"ridge_synthetic_save_folder_{int(week):02d}" if mode == "League ratings" else "ridge_save_folder"
     save_folder = output_box.text_input("Save folder", str(default_save_folder(mode, int(week))), key=save_key, help="Where this run's results are saved. Results pages only list runs saved under nflsim/outputs.")
 
     ui.section("Run")
@@ -427,18 +434,12 @@ def main():
         prepared = []
         failures = []
         with st.status("Preparing Ridge game inputs..."):
-            if mode == "Synthetic opponents":
-                for team in selected_teams:
-                    try:
-                        game_row = _weather_override(synthetic_game_row(synthetic_schedule, team, int(week)), weather_overrides)
-                        prepared.append(build_synthetic_game(runtime, players, teams, roster, depth,
-                                                             synthetic_schedule, team, game_row, simulations,
-                                                             use_model_rank,
-                                                             assignments=custom_assignments.get(team),
-                                                             player_overrides=custom_player_overrides.get(team, {}),
-                                                             dl=custom_dl.get(team), pv_override=custom_pv.get(team)))
-                    except (ValueError, KeyError) as error:
-                        failures.append(f"{team}: {error}")
+            if mode == "League ratings":
+                custom = {team: {"assignments": custom_assignments.get(team), "player_overrides": custom_player_overrides.get(team, {}),
+                                 "dl": custom_dl.get(team), "pv_override": custom_pv.get(team)} for team in custom_assignments}
+                prepared, missing = build_league_games(runtime, players, teams, roster, depth, synthetic_schedule, int(week), simulations,
+                                                       selected_teams, use_model_rank, custom)
+                failures.extend(f"{item['team']}: {item['error']}" for item in missing)
             else:
                 for _, row in rows.iterrows():
                     try:
@@ -469,7 +470,8 @@ def main():
         games.to_csv(destination / "games.csv", index=False)
         player_rows.to_csv(destination / "players.csv", index=False)
         summary.to_csv(destination / "summary.csv", index=False)
-        fantasy_correlation_matrix(player_rows).to_csv(destination / "fantasy_correlation.csv")
+        if mode != "League ratings":
+            fantasy_correlation_matrix(player_rows).to_csv(destination / "fantasy_correlation.csv")
         manifest = {
             "run_id": run_id, "season": int(season), "week": int(week),
             "mode": mode, "backend": backend, "simulations_per_game": simulations,
@@ -479,15 +481,19 @@ def main():
             "weather_forecast": {"source": "Open-Meteo", "fetched_on": sorted(set(forecast.fetched_on.astype(str))), "games": len(forecast)},
             "player_value": {"custom_lineup_pv": lineup_pv, "pv_overrides": custom_pv,
                              "custom_dl": {team: [item["player_id"] for item in items] for team, items in custom_dl.items()}},
-            "synthetic_home_away_swap": (
-                "roles reversed after floor(simulations_per_game / 2) simulations"
-                if mode == "Synthetic opponents" else "not applicable"
+            "league_home_away_swap": (
+                "roles reversed halfway through each pairing; a team against itself gets half the simulations"
+                if mode == "League ratings" else "not applicable"
             ),
         }
         (destination / "run_manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
         st.session_state["ridge_last_run"] = str(destination)
         st.success(f"Wrote Ridge simulation outputs to {destination}")
-        results_panel(summary, player_rows)
+        if mode == "League ratings":
+            table = team_table(games)
+            results_panel(table, player_rows[player_rows.team.isin(table.team)])
+        else:
+            results_panel(summary, player_rows)
 
     last_run = st.session_state.get("ridge_last_run")
     if last_run:

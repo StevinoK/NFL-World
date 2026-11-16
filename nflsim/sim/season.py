@@ -167,6 +167,50 @@ def cached_scores(path: Path, make) -> pd.DataFrame:
     return scores
 
 
+def _draws(rng: np.random.Generator, simulations: int, games: int, seasons: int) -> np.ndarray:
+    """Which simulation of each remaining game every season uses. Called first on a fresh generator, so a seed
+    gives the same draws everywhere."""
+    return rng.integers(0, simulations, size=(seasons, games))
+
+
+def season_points(schedule: pd.DataFrame, scores: pd.DataFrame, seasons: int, seed: int):
+    """Points for and against per simulated season, shape (seasons, 32), from the same draws as `play_seasons`."""
+    played = schedule[schedule.home_score.notna()]
+    remaining = schedule[schedule.home_score.isna()].sort_values("game_id")
+    columns = remaining.game_id.astype(str)
+    home_scores = scores.pivot(index="simulation", columns="game_id", values="home_score").reindex(columns=columns).to_numpy(float)
+    away_scores = scores.pivot(index="simulation", columns="game_id", values="away_score").reindex(columns=columns).to_numpy(float)
+    draws = _draws(np.random.default_rng(seed), len(home_scores), home_scores.shape[1], seasons)
+    games = np.arange(home_scores.shape[1])
+    home_drawn, away_drawn = home_scores[draws, games], away_scores[draws, games]
+
+    def teams(column, frame):
+        matrix = np.zeros((len(frame), len(standings.TEAMS)))
+        matrix[np.arange(len(frame)), frame[column].map(standings.INDEX).astype(int).to_numpy()] = 1
+        return matrix
+
+    home, away = teams("home_team", remaining), teams("away_team", remaining)
+    played_home, played_away = teams("home_team", played), teams("away_team", played)
+    scored = played.home_score.to_numpy(float) @ played_home + played.away_score.to_numpy(float) @ played_away
+    allowed = played.away_score.to_numpy(float) @ played_home + played.home_score.to_numpy(float) @ played_away
+    points_for = home_drawn @ home + away_drawn @ away + scored
+    points_against = away_drawn @ home + home_drawn @ away + allowed
+    return points_for, points_against
+
+
+def season_table(schedule: pd.DataFrame, scores: pd.DataFrame, seasons: int, seed: int, results=None) -> pd.DataFrame:
+    """One row per simulated season and team: wins, seed (0 = missed the playoffs), points for and against."""
+    wins, seeds = results or play_seasons(schedule, scores, seasons, seed)
+    points_for, points_against = season_points(schedule, scores, seasons, seed)
+    count = len(wins)
+    return pd.DataFrame({
+        "season": np.repeat(np.arange(count), len(standings.TEAMS)).astype("int32"),
+        "team": np.tile(np.array(standings.TEAMS), count), "wins": wins.ravel().astype("float32"),
+        "seed": seeds.ravel().astype("int8"), "points_for": points_for.ravel().astype("int16"),
+        "points_against": points_against.ravel().astype("int16"),
+    })
+
+
 def play_seasons(schedule: pd.DataFrame, scores: pd.DataFrame, seasons: int, seed: int):
     """Wins (+0.5 per tie) and playoff seeds per simulated season, shape (seasons, 32)."""
     played = schedule[schedule.home_score.notna()]
@@ -182,7 +226,7 @@ def play_seasons(schedule: pd.DataFrame, scores: pd.DataFrame, seasons: int, see
     away = np.concatenate([played.away_team.map(standings.INDEX), remaining.away_team.map(standings.INDEX)]).astype(int)
     fixed = ((np.sign(played.home_score - played.away_score) + 1) / 2).to_numpy()
     rng = np.random.default_rng(seed)
-    draws = rng.integers(0, len(outcomes), size=(seasons, outcomes.shape[1]))
+    draws = _draws(rng, len(outcomes), outcomes.shape[1], seasons)
     wins = np.zeros((seasons, len(standings.TEAMS)))
     seeds = np.zeros((seasons, len(standings.TEAMS)), dtype=int)
     for index in range(seasons):
@@ -258,6 +302,41 @@ def load_experiment(output: Path) -> Experiment:
                       pd.read_csv(output / "games.csv"), json.loads((output / "manifest.json").read_text(encoding="utf-8")))
 
 
+def experiment_tag(manifest: dict) -> str:
+    """The baseline an experiment was measured against: simulations per game, seed and weather forecast."""
+    return manifest.get("baseline_tag") or (
+        f"sims{manifest['simulations_per_game']}-seed{manifest['seed']}-{manifest['weather_forecast']['tag']}")
+
+
+def baseline_seasons_path(output: Path, manifest: dict) -> Path:
+    return output.parent.parent / f"baseline-seasons-{experiment_tag(manifest)}-n{manifest['seasons']}.parquet"
+
+
+def ensure_seasons(output: Path, artifact_dir: Path) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Per-season tables for an experiment and its baseline, rebuilt from the cached game scores if missing.
+
+    Experiments saved before these tables existed are filled in here; the draws come from the seed, so the
+    rebuilt seasons are the ones the experiment's averages came from.
+    """
+    manifest = json.loads((output / "manifest.json").read_text(encoding="utf-8"))
+    tag, seasons, seed = experiment_tag(manifest), manifest["seasons"], manifest["seed"]
+    root = output.parent.parent
+    base_path, experiment_path = baseline_seasons_path(output, manifest), output / "seasons.parquet"
+    if base_path.exists() and experiment_path.exists():
+        return pd.read_parquet(base_path), pd.read_parquet(experiment_path)
+    schedule, _, _ = _load_inputs(manifest["season"], artifact_dir / "weekly_inputs")
+    baseline = pd.read_parquet(root / f"baseline-{tag}.parquet")
+    if not base_path.exists():
+        season_table(schedule, baseline, seasons, seed).to_parquet(base_path, index=False)
+    if not experiment_path.exists():
+        moves = [Move(**move) for move in manifest["moves"]]
+        key = manifest.get("experiment_key") or canonical_hash([[asdict(move) for move in moves], manifest["first_week"], tag])[:12]
+        rerun = pd.read_parquet(root / f"experiment-{key}-{tag}.parquet")
+        scores = pd.concat([baseline[~baseline.game_id.isin(rerun.game_id)], rerun], ignore_index=True)
+        season_table(schedule, scores, seasons, seed).to_parquet(experiment_path, index=False)
+    return pd.read_parquet(base_path), pd.read_parquet(experiment_path)
+
+
 def season_root(season: int, bundle_hash: str) -> Path:
     return ROOT / "outputs/season" / str(season) / bundle_hash[:12]
 
@@ -306,6 +385,10 @@ def run_experiment(runtime, artifact_dir: Path, bundle_hash: str, season: int, m
     experiment = play_seasons(schedule, scores, seasons, seed)
     output.mkdir(parents=True, exist_ok=True)
     summarize(*base).to_csv(root / "baseline_summary.csv", index=False)
+    baseline_seasons = root / f"baseline-seasons-{tag}-n{seasons}.parquet"
+    if not baseline_seasons.exists():
+        season_table(schedule, baseline, seasons, seed, base).to_parquet(baseline_seasons, index=False)
+    season_table(schedule, scores, seasons, seed, experiment).to_parquet(output / "seasons.parquet", index=False)
     summarize(*experiment).to_csv(output / "summary.csv", index=False)
     compare(base, experiment).sort_values("playoffs_change", key=abs, ascending=False).to_csv(output / "comparison.csv", index=False)
     game_changes(baseline, rerun, schedule).to_csv(output / "games.csv", index=False)
@@ -314,6 +397,7 @@ def run_experiment(runtime, artifact_dir: Path, bundle_hash: str, season: int, m
         "first_week": first_week, "affected_teams": sorted(affected), "games_resimulated": changed.game_id.tolist(),
         "simulations_per_game": simulations, "seasons": seasons, "seed": seed, "run_id": run_id,
         "weather_forecast": {"source": "Open-Meteo", "games": len(forecast), "tag": forecast_tag(forecast)},
+        "baseline_tag": tag, "experiment_key": key,
         "standard_errors": "paired season draws only; game-simulation noise is shared through common seeds",
     }, indent=2), encoding="utf-8")
     return load_experiment(output)

@@ -1,7 +1,7 @@
 """Kickoff forecasts for unplayed outdoor games, from Open-Meteo (free, no key, about 16 days ahead).
 
 The schedule only gets temperature and wind after a game is played, so without this every upcoming outdoor game has
-`weather_missing` set. A forecast is saved once per day and reused, so runs on the same day see the same weather.
+`weather_missing` set. Past games use the archived forecasts in `forecast_archive`. A forecast is saved once per day and reused, so runs on the same day see the same weather.
 """
 
 from __future__ import annotations
@@ -21,6 +21,7 @@ URL = "https://api.open-meteo.com/v1/forecast"
 FOLDER = ROOT / "outputs/weather"
 TIME_ZONE = "America/New_York"  # The schedule's gametime is Eastern.
 HORIZON_DAYS = 16
+GAME_HOURS = 3  # Precipitation counts the kickoff hour and the next three.
 COLUMNS = ["game_id", "temp", "wind", "precipitation", "fetched_on"]
 # Latitude and longitude of every open-air stadium. Indoor and retractable venues get no forecast.
 STADIUMS = {
@@ -43,11 +44,17 @@ def games_needing_forecast(schedule: pd.DataFrame, today: date | None = None) ->
     return schedule[roof.isin(OUTDOOR_ROOFS) & unplayed & empty & days.between(0, HORIZON_DAYS - 1)]
 
 
-def _at_kickoff(times: pd.Series, values: list, kickoff: pd.Timestamp) -> float:
+def at_kickoff(series: pd.Series, kickoff: pd.Timestamp) -> float:
     """Value at kickoff, between the two surrounding hours."""
-    series = pd.Series(values, index=times, dtype=float)
-    series = series.reindex(series.index.union([kickoff])).interpolate(method="time")
-    return float(series.loc[kickoff])
+    series = series.astype(float)
+    return float(series.reindex(series.index.union([kickoff])).interpolate(method="time").loc[kickoff])
+
+
+def game_precipitation(series: pd.Series, kickoff: pd.Timestamp) -> float:
+    """Rain and melted snow forecast during the game, in millimeters. Unknown if any hour is missing."""
+    start = kickoff.floor("h")
+    hours = series.astype(float).loc[start:start + pd.Timedelta(hours=GAME_HOURS)]
+    return float(hours.sum()) if len(hours) == GAME_HOURS + 1 and hours.notna().all() else np.nan
 
 
 def parse_forecast(games: pd.DataFrame, responses: list[dict], stadiums: list[str], fetched_on: str) -> pd.DataFrame:
@@ -60,9 +67,10 @@ def parse_forecast(games: pd.DataFrame, responses: list[dict], stadiums: list[st
         kickoff = pd.Timestamp(f"{pd.Timestamp(game.gameday).date()} {game.gametime}")
         if kickoff < times.iloc[0] or kickoff > times.iloc[-1]:
             continue
-        values = {name: _at_kickoff(times, hourly[column], kickoff) for name, column in
-                  (("temp", "temperature_2m"), ("wind", "wind_speed_10m"), ("precipitation", "precipitation"))}
-        if np.isfinite(values["temp"]) and np.isfinite(values["wind"]):
+        series = {column: pd.Series(hourly[column], index=times.to_numpy(), dtype=float) for column in ("temperature_2m", "wind_speed_10m", "precipitation")}
+        values = {"temp": at_kickoff(series["temperature_2m"], kickoff), "wind": at_kickoff(series["wind_speed_10m"], kickoff),
+                  "precipitation": game_precipitation(series["precipitation"], kickoff)}
+        if np.isfinite(list(values.values())).all():
             rows.append({"game_id": str(game.game_id), **{key: round(value, 1) for key, value in values.items()}, "fetched_on": fetched_on})
     return pd.DataFrame(rows, columns=COLUMNS)
 
@@ -100,14 +108,15 @@ def load_forecast(schedule: pd.DataFrame, *, today: date | None = None, refresh:
 
 
 def apply_forecast(schedule: pd.DataFrame, forecast: pd.DataFrame) -> pd.DataFrame:
-    """Fill temperature and wind on games that have none. Recorded weather always wins."""
+    """Fill weather on games that have none. A game already holding an archived forecast keeps it."""
     schedule = schedule.copy()
-    temp, wind = (pd.to_numeric(schedule[column], errors="coerce") for column in ("temp", "wind"))
+    if "precipitation" not in schedule:
+        schedule["precipitation"] = np.nan
     table = forecast.drop_duplicates("game_id").set_index("game_id")
     ids = schedule.game_id.astype(str)
-    empty = temp.isna() | wind.isna()
-    schedule["temp"] = temp.where(~empty, ids.map(table.temp).astype(float))
-    schedule["wind"] = wind.where(~empty, ids.map(table.wind).astype(float))
+    empty = pd.to_numeric(schedule.temp, errors="coerce").isna() | pd.to_numeric(schedule.wind, errors="coerce").isna()
+    for column in ("temp", "wind", "precipitation"):
+        schedule[column] = pd.to_numeric(schedule[column], errors="coerce").where(~empty, ids.map(table[column]).astype(float))
     schedule["weather_forecast"] = empty & ids.isin(table.index)
     return schedule
 
@@ -116,5 +125,5 @@ def forecast_tag(forecast: pd.DataFrame) -> str:
     """Short name for this weather, so cached simulations are never compared across different forecasts."""
     if forecast.empty:
         return "wxnone"
-    text = forecast[["game_id", "temp", "wind"]].sort_values("game_id").to_csv(index=False)
+    text = forecast[["game_id", "temp", "wind", "precipitation"]].sort_values("game_id").to_csv(index=False)
     return "wx" + hashlib.sha256(text.encode()).hexdigest()[:8]

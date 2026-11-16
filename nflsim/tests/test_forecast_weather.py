@@ -30,11 +30,12 @@ def test_every_upcoming_open_air_stadium_has_coordinates_or_is_skipped():
     assert fw.fetch_forecast(games, "2026-11-06").empty
 
 
-def test_kickoff_value_falls_between_the_hours():
+def test_kickoff_value_falls_between_the_hours_and_precipitation_adds_up_the_game():
     games = fw.games_needing_forecast(schedule(), date(2026, 11, 6))
-    hourly = {"time": ["2026-11-08T13:00", "2026-11-08T14:00"], "temperature_2m": [40, 50], "wind_speed_10m": [10, 20], "precipitation": [0, 1]}
+    hourly = {"time": [f"2026-11-08T{hour}:00" for hour in range(13, 19)], "temperature_2m": [40, 50, 50, 50, 50, 50],
+              "wind_speed_10m": [10, 20, 20, 20, 20, 20], "precipitation": [0, 1, 0.5, 0.2, 0.3, 9]}
     table = fw.parse_forecast(games, [{"hourly": hourly}], ["GNB00"], "2026-11-06")
-    assert table.iloc[0].to_dict() == {"game_id": "soon", "temp": 45.0, "wind": 15.0, "precipitation": 0.5, "fetched_on": "2026-11-06"}
+    assert table.iloc[0].to_dict() == {"game_id": "soon", "temp": 45.0, "wind": 15.0, "precipitation": 1.7, "fetched_on": "2026-11-06"}
 
 
 def test_game_outside_the_returned_hours_gets_no_forecast():
@@ -43,7 +44,7 @@ def test_game_outside_the_returned_hours_gets_no_forecast():
     assert fw.parse_forecast(games, [{"hourly": hourly}], ["GNB00"], "2026-11-06").empty
 
 
-def test_forecast_fills_gaps_clears_missing_flag_and_never_replaces_recorded_weather():
+def test_forecast_fills_gaps_clears_missing_flag_and_keeps_weather_already_there():
     forecast = pd.DataFrame({"game_id": ["soon", "played"], "temp": [40.0, 99.0], "wind": [12.0, 99.0], "precipitation": [0.0, 0.0], "fetched_on": ["d", "d"]})
     filled = fw.apply_forecast(schedule(), forecast).set_index("game_id")
     assert filled.loc["played", "temp"] == 55 and not filled.loc["played", "weather_forecast"]
@@ -80,8 +81,8 @@ def test_failed_fetch_falls_back_to_the_newest_saved_forecast(tmp_path, monkeypa
 
 
 def test_tag_changes_with_the_weather():
-    base = pd.DataFrame({"game_id": ["a"], "temp": [40.0], "wind": [12.0]})
-    assert fw.forecast_tag(base) != fw.forecast_tag(base.assign(wind=13.0))
+    base = pd.DataFrame({"game_id": ["a"], "temp": [40.0], "wind": [12.0], "precipitation": [0.0]})
+    assert fw.forecast_tag(base) != fw.forecast_tag(base.assign(wind=13.0)) != fw.forecast_tag(base.assign(precipitation=2.0))
     assert fw.forecast_tag(base.iloc[:0]) == "wxnone"
 
 

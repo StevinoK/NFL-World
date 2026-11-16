@@ -23,6 +23,34 @@ import requests
 # --------------------------------------------------------------------------- loading
 
 
+def name_keys(names: pd.Series) -> pd.Series:
+    """The `short_name` join key: first three letters of the first name, a dot, then the second word ("Jus.Jefferson").
+    Periods are dropped from the first name first, so "D.J. Moore" and "DJ Moore" both key to "DJ.Moore"."""
+    words = names.astype(str).str.split()
+    return words.str[0].str.replace(".", "", regex=False).str[0:3] + "." + words.str[1]
+
+
+def slate_from_simulations(source) -> Optional[Tuple[int, int]]:
+    """(season, week) of a long simulations CSV from its `game_id` ("2026_09_BUF_MIN") and `week` columns, or None
+    when the file doesn't carry them or covers more than one week. Rewinds an uploaded file afterwards."""
+    try:
+        frame = pd.read_csv(source, usecols=lambda column: column in ("game_id", "week"))
+    except (OSError, ValueError, pd.errors.ParserError):
+        frame = pd.DataFrame()
+    finally:
+        if hasattr(source, "seek"):
+            source.seek(0)
+    if "game_id" not in frame or frame.empty:
+        return None
+    seasons = frame["game_id"].astype(str).str.split("_").str[0]
+    weeks = frame["week"] if "week" in frame else frame["game_id"].astype(str).str.split("_").str[1]
+    pairs = set(zip(pd.to_numeric(seasons, errors="coerce"), pd.to_numeric(weeks, errors="coerce")))
+    if len(pairs) != 1:
+        return None
+    season, week = pairs.pop()
+    return (int(season), int(week)) if pd.notna(season) and pd.notna(week) else None
+
+
 def load_prices(path: str) -> pd.DataFrame:
     """Load a DK salaries CSV and derive the `short_name` key used to join with sims."""
     prices = pd.read_csv(path)
@@ -30,9 +58,7 @@ def load_prices(path: str) -> pd.DataFrame:
     dst_mask = prices["Position"] == "DST"
     prices.loc[dst_mask, "Name"] = prices.loc[dst_mask, "Name"].str.split().str[0] + " Defense"
 
-    prices["short_name"] = (
-        prices["Name"].str.split().str[0].str[0:3] + "." + prices["Name"].str.split().str[1]
-    )
+    prices["short_name"] = name_keys(prices["Name"])
     prices.loc[prices["Position"] == "DST", "short_name"] = (
         prices.loc[prices["Position"] == "DST", "TeamAbbrev"].str.split().str[0] + ".Defense"
     )
@@ -80,7 +106,7 @@ def align_simulation_columns(simulations: pd.DataFrame) -> Tuple[pd.DataFrame, p
     short_names = np.where(
         means.index.str.contains("Defense|Kicker", case=False, regex=True),
         means.index.str.split().str[0] + "." + means.index.str.split().str[1],
-        means.index.str.split().str[0].str[0:3] + "." + means.index.str.split().str[1],
+        name_keys(pd.Series(means.index)).to_numpy(),
     )
     means.index = short_names
     covs.index = short_names
@@ -108,7 +134,7 @@ def load_entries(path: str) -> pd.DataFrame:
 
 
 def clean_export_ids(export_df: pd.DataFrame) -> pd.DataFrame:
-    export_df = export_df.dropna(subset=["Entry ID"]).copy()
+    export_df = export_df.dropna(subset=["Entry ID"]).reset_index(drop=True)
     export_df["Entry ID"] = export_df["Entry ID"].astype(float).astype("int64").astype(str)
     export_df["Contest ID"] = export_df["Contest ID"].astype(float).astype("int64").astype(str)
     return export_df
@@ -660,6 +686,49 @@ def run_field_simulation(
     return agents, counts, all_indices
 
 
+# ------------------------------------------------------------------- held-out check
+
+
+def split_simulations(num_sims: int, holdout: float = 0.5, seed: int = 0) -> Tuple[np.ndarray, np.ndarray]:
+    """Random disjoint simulation columns: one set to pick lineups on, the other to judge them on. With millions of
+    lineups and a thousand or so simulations, lineups picked and scored on the same runs look better than they are."""
+    order = np.random.default_rng(seed).permutation(num_sims)
+    held = int(round(num_sims * holdout))
+    if held <= 0 or held >= num_sims:
+        raise ValueError(f"holdout must leave simulations on both sides; got {holdout} of {num_sims}")
+    return np.sort(order[held:]), np.sort(order[:held])
+
+
+def portfolio_results(
+    lineup_scores: np.ndarray,
+    picks: Iterable[int],
+    field_indices: Iterable[int],
+    payout_tiers: Optional[pd.DataFrame] = None,
+    entry_fee: Optional[float] = None,
+    field_size: Optional[int] = None,
+) -> dict:
+    """How a set of our lineups does against the field lineups in each simulation column of `lineup_scores`.
+
+    Win share is the share of simulations where our best lineup beats every field lineup. With a payout table it also
+    gives expected profit and the Omega ratio, placing each of our lineups among the field and our other entries."""
+    picks = np.asarray(list(picks), dtype=np.int64)
+    field = np.asarray(list(field_indices), dtype=np.int64)
+    ours = lineup_scores[picks]
+    result = {"simulations": int(lineup_scores.shape[1]), "mean_score": float(ours.mean()),
+              "win_share": float((ours.max(axis=0) > lineup_scores[field].max(axis=0)).mean())}
+    if payout_tiers is None or entry_fee is None or field_size is None or payout_tiers.empty:
+        return result
+    max_place = max(1, int(field_size))
+    payout_by_place = _build_payout_by_place(payout_tiers, max_place)
+    sorted_field = np.sort(lineup_scores[field], axis=0)
+    places = _places_against_field(ours, sorted_field, max(1, max_place - len(picks)), max_place)
+    own_greater = (ours[None, :, :] > ours[:, None, :]).sum(axis=0)
+    cash = payout_by_place[np.minimum(max_place, places + own_greater)].sum(axis=0)
+    returns = cash - float(entry_fee) * len(picks)
+    result.update({"expected_profit": float(returns.mean()), "omega": omega_ratio(returns)})
+    return result
+
+
 def draft_our_entries(
     export_df: pd.DataFrame,
     lu_scores_array: np.ndarray,
@@ -671,10 +740,19 @@ def draft_our_entries(
     field_size: Optional[int] = None,
     objective: str = "winner",
     omega_pool_size: Optional[int] = 20_000,
+    pick_columns: Optional[np.ndarray] = None,
+    lineup_indices: Optional[List[int]] = None,
 ) -> Tuple[pd.DataFrame, pd.DataFrame, pd.Series]:
     """Draft our own `len(export_df)` entries against the field and fill the DK entries
-    template's CPT/FLEX columns (looked up by name, not hardcoded column positions)."""
-    if objective == "omega" and payout_tiers is not None and entry_fee is not None and field_size is not None:
+    template's CPT/FLEX columns (looked up by name, not hardcoded column positions).
+
+    `pick_columns` limits the drafting to those simulations, leaving the rest to judge the picks. Pass
+    `lineup_indices` to fill the template with lineups already chosen elsewhere."""
+    if pick_columns is not None:
+        lu_scores_array = np.ascontiguousarray(lu_scores_array[:, pick_columns])
+    if lineup_indices is not None:
+        lineup_indices = list(lineup_indices)
+    elif objective == "omega" and payout_tiers is not None and entry_fee is not None and field_size is not None:
         lineup_indices, _, _ = _greedy_omega_response(
             lu_scores_array,
             field_indices,
@@ -692,7 +770,7 @@ def draft_our_entries(
         lineup_indices = our_team.lineup_indices
 
     selected_lineups = [
-        {"Players": lineup_sims_df.iloc[idx]["Players"], "Salary": lineup_sims_df.iloc[idx]["Salary"]}
+        {"Players": lineup_sims_df.iloc[idx]["Players"], "Salary": lineup_sims_df.iloc[idx]["Salary"], "lineup_index": int(idx)}
         for idx in lineup_indices
     ]
     drafted_lineups_df = pd.DataFrame(selected_lineups)

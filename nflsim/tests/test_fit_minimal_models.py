@@ -42,3 +42,21 @@ def test_play_schema_keeps_original_features_and_deduplicates_team_epa_defense()
     assert "def_rush_epa_rate" not in selected
     assert "opp_def_rush_epa_rate" not in selected
     assert not any(column.endswith("_available") for column in selected)
+
+def test_dropped_inputs_leave_columns_and_context_and_reject_unknowns(tmp_path):
+    import json
+    import pytest
+    from nflsim.models.fit_minimal import DROPPED_INPUTS_FILE, apply_dropped_inputs, load_dropped_inputs
+    specs = {"int": {"columns": ["down", "pass_oe"], "context_columns": ["ridge_int_venue_effect", "pv_off_qb"],
+                     "sidecar": {"kind": "flat"}}}
+    trimmed = apply_dropped_inputs(specs, {"int": ["pass_oe", "pv_off_qb"]})
+    assert trimmed["int"]["columns"] == ["down"]
+    assert trimmed["int"]["context_columns"] == ["ridge_int_venue_effect"]
+    assert specs["int"]["columns"] == ["down", "pass_oe"]
+    with pytest.raises(ValueError):
+        apply_dropped_inputs(specs, {"int": ["never_there"]})
+    with pytest.raises(ValueError):
+        apply_dropped_inputs(specs, {"nope": ["down"]})
+    assert load_dropped_inputs(tmp_path) == {}
+    (tmp_path / DROPPED_INPUTS_FILE).write_text(json.dumps({"int": ["pass_oe"]}))
+    assert load_dropped_inputs(tmp_path) == {"int": ["pass_oe"]}

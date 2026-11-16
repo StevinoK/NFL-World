@@ -12,6 +12,7 @@ from nflsim.features.player_value import PV_DEFENSE_COLUMNS, PV_OFFENSE_COLUMNS
 from nflsim.semantics import (
     ISOLATED_MU_CONTEXT_V2, context_available_column, opponent_defense_source,
 )
+from nflsim.features.forecast_archive import pregame_weather
 from nflsim.features.weather import WEATHER_COLUMNS, weather_frame
 from nflsim.engine.simulation_runtime import SKILL_SLOT_ORDER, SimulationRuntime
 
@@ -81,6 +82,7 @@ def prepare_frame(pbp, players, teams, semantics=None, seasons=(2017, 2024)):
     """
     pbp = normalize_training_season(pbp)
     pbp, players, teams = [canonicalize_teams(frame) for frame in (pbp, players, teams)]
+    pbp = pregame_weather(pbp)  # Models learn from what was forecast, the only weather a pregame sim can know.
     pbp.loc[:, list(WEATHER_COLUMNS)] = weather_frame(pbp)
     required = {"season", "season_type", "aborted_play", "penalty", "game_id", "posteam", "defteam"}
     if not required <= set(pbp):

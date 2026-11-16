@@ -13,6 +13,8 @@ import pandas as pd
 
 from nflsim.engine.chunk_execution import PreparedGame, build_chunk_tasks
 from nflsim.features.builder import canonicalize_teams
+from nflsim.features.forecast_archive import pregame_weather
+from nflsim.features.weather import WEATHER_COLUMNS, weather_frame
 from nflsim.bundle import trained_through, validate_bundle, verify_bundle_hash
 from nflsim.semantics import LEGACY_SEMANTICS, semantics_of
 from nflsim.remote.worker import simulate_chunk
@@ -57,6 +59,19 @@ def validate_frozen_venue(game_row, team_stats):
     return {**status, "status": "validated"}
 
 
+REPORT_EVERY_SECONDS = 1800  # A report rereads every finished chunk, which ends up taking far longer than simulating them.
+
+
+def pregame_team_weather(team_stats: pd.DataFrame, schedule: pd.DataFrame) -> pd.DataFrame:
+    """Team rows carrying the archived forecast for their game, as a pregame sim would have seen it."""
+    weather = weather_frame(pregame_weather(schedule)).set_index(schedule.game_id.astype(str).to_numpy())
+    ids = team_stats.game_id.astype(str)
+    scheduled = ids.isin(weather.index)
+    updated = {column: pd.Series(ids.map(weather[column]), index=team_stats.index).where(scheduled, team_stats[column] if column in team_stats else 0.0)
+               for column in WEATHER_COLUMNS}
+    return team_stats.assign(**updated)
+
+
 def make_collector(args, output):
     os.environ["FOOTBALL_ARTIFACT_DIR"] = str(args.artifact_dir)
     import nflsim.engine.backtest_reports as source
@@ -97,6 +112,7 @@ def make_collector(args, output):
             self.team_stats = self.runtime.team_stats_wide.copy()
             self.player_stats["game_date"] = pd.to_datetime(self.player_stats.game_date)
             self.team_stats["game_date"] = pd.to_datetime(self.team_stats.game_date)
+            self.team_stats = pregame_team_weather(self.team_stats, self.schedule)
             for name in ("_pbp_cache", "_actual_player_weekly_cache", "_actual_player_game_stats_cache", "_actual_team_game_stats_cache", "_actual_game_fumble_stats_cache", "_actual_team_penalty_stats_cache"):
                 setattr(self, name, None)
             self.results, self.missing = pd.DataFrame(), pd.DataFrame()
@@ -337,6 +353,7 @@ def main():
                 failures.append({"game_id": row.game_id, "stage": "package", "error": str(error)})
         write_json(output / "failures.json", failures)
         tasks = iter(pending_tasks(games, args.artifact_dir, args.max_containers, store))
+        last_report = time.monotonic()
         while True:
             batch = list(itertools.islice(tasks, args.max_containers*4))
             if not batch:
@@ -347,7 +364,9 @@ def main():
                     if result["task_hash"] not in expected:
                         raise ValueError("Unexpected chunk result")
                     store.save(expected[result["task_hash"]], result)
-                reports(store, collector, source)
+                if time.monotonic() - last_report >= REPORT_EVERY_SECONDS:
+                    reports(store, collector, source)
+                    last_report = time.monotonic()
             except Exception as error:
                 failures.extend({"game_id": task["game_id"], "task_hash": task["task_hash"], "simulation_ids": task["simulation_ids"], "stage": "dispatch", "error": str(error)} for task in batch if any((task["game_id"], simulation) not in store.completed for simulation in task["simulation_ids"]))
                 write_json(output / "failures.json", failures)

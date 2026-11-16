@@ -43,3 +43,5 @@ rb_means.csv
 rb_covs.csv
 # Third-party Madden ratings (no license; local use only)
 data/madden/
+# FantasyLabs contest data (third-party; local use only)
+data/fantasylabs/

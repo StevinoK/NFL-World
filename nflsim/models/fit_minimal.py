@@ -16,6 +16,7 @@ from nflsim.engine.cascade_trainer import CascadeConfig, fit_cascade_general, sa
 from nflsim.paths import ROOT, digest, output_dir, write_json
 from nflsim.semantics import ISOLATED_MU_CONTEXT_V2
 from nflsim.features.goal_line import GOAL_CAPPED_MODELS, GOAL_LINE_COLUMNS, with_goal_line_inputs
+from nflsim.features.weather import WEATHER_COLUMNS as WEATHER_FRAME_COLUMNS
 from nflsim.features.training_data import ATTEMPT_MODELS, model_frame, prepare_frame
 from nflsim.models.train import cascade_metric_record, fit_network
 from nflsim.configuration import TARGETS_BY_NAME, V2_MODEL_CONTEXT
@@ -44,12 +45,38 @@ PLAYER_GROUP_BY_MODEL = {
 }
 STRUCTURAL_COLUMNS = {"air_yards", "position", "play_type_cat", "play_outcome", "penalty_context"}
 GAME_STATE_COLUMNS = set(SimulationRuntime.game_state_cols)
-WEATHER_COLUMNS = {"weather_outdoor", "weather_temp_delta", "weather_wind_speed", "weather_missing"}
+WEATHER_COLUMNS = set(WEATHER_FRAME_COLUMNS)
 PV_COLUMNS = {"pv_off_qb", "pv_off_wr", "pv_off_rb", "pv_off_te", "pv_def_dl"}
 # Deep completion over expected rests on about 2.6 attempts per game and barely repeats (full-season reliability
 # 0.08 for defenses, 0.17 for passers), but its rare extreme values moved simulated scoring by several points.
 NOISY_COLUMNS = {"deep_cpoe_allowed", "cpoe_deep", "ridge_cpoe_deep_venue_effect", "ridge_cpoe_deep_offense_effect",
                  "ridge_cpoe_deep_opponent_defense_effect", "ridge_cpoe_deep_defense_mu"}
+
+
+DROPPED_INPUTS_FILE = "dropped_inputs.json"
+
+
+def apply_dropped_inputs(specs: dict, dropped: dict[str, list[str]]) -> dict:
+    """Remove each model's dropped inputs (inputs that did not help out of sample) from its columns and context."""
+    unknown = set(dropped) - set(specs)
+    if unknown:
+        raise ValueError(f"Dropped inputs name unknown models: {sorted(unknown)}")
+    result = copy.deepcopy(specs)
+    for model, columns in dropped.items():
+        spec, removed = result[model], set(columns)
+        present = set(spec["columns"]) | set(spec["context_columns"])
+        if removed - present:
+            raise ValueError(f"{model}: dropped inputs it never had: {sorted(removed - present)}")
+        spec["columns"] = [column for column in spec["columns"] if column not in removed]
+        spec["context_columns"] = [column for column in spec["context_columns"] if column not in removed]
+        if spec["sidecar"].get("kind") == "cascade":
+            spec["sidecar"]["context_columns"] = list(spec["context_columns"])
+    return result
+
+
+def load_dropped_inputs(directory: Path) -> dict[str, list[str]]:
+    path = Path(directory) / DROPPED_INPUTS_FILE
+    return json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
 
 
 def ridge_context_columns(model: str) -> list[str]:
@@ -123,6 +150,8 @@ def reduced_spec(model: str, spec: dict) -> dict:
         if (column.startswith("ridge_") and not column.endswith("_available"))
         or column in PV_COLUMNS or column in WEATHER_COLUMNS
     ]
+    if WEATHER_COLUMNS & set(context_columns):  # The reference manifest predates precipitation.
+        context_columns = list(dict.fromkeys([*context_columns, *WEATHER_FRAME_COLUMNS]))
     context_columns = [column for column in context_columns if column not in duplicate_defense]
     context_columns = list(dict.fromkeys([*context_columns, *ridge_context_columns(model)]))
     selected_columns = [column for column in selected_columns if column not in NOISY_COLUMNS]
@@ -176,7 +205,7 @@ def game_effects_specs(specs: dict, model_manifest: dict) -> dict:
         spec.pop("source_hashes", None)
         spec.update(prefix=model, groups=groups, prior_columns=[],
                     columns=[column for group in groups for column in getattr(SimulationRuntime, group)],
-                    context_columns=[column for column in punt["context_columns"] if column in WEATHER_COLUMNS])
+                    context_columns=list(WEATHER_FRAME_COLUMNS))
         spec["sidecar"] = {key: copy.deepcopy(punt["sidecar"][key]) for key in keep}
         spec["sidecar"].update(kind="corn", artifact_prefix=model, model_name=model, dims={"input_dim": 0, "output_dim": 0})
         result[model] = spec
@@ -340,14 +369,24 @@ def main():
     parser.add_argument("--seasons", type=int, nargs=2, default=(2017, 2024), metavar=("FIRST", "LAST"),
                         help="Training seasons (the held-out test split is drawn within them)")
     parser.add_argument("--inputs", type=Path, default=INPUTS, help="Directory with pbp.parquet and roster.parquet")
+    parser.add_argument("--dropped-inputs", type=Path,
+                        help=f"JSON {{model: [inputs]}} to leave out; copied into the output as {DROPPED_INPUTS_FILE}")
     args = parser.parse_args()
     output = output_dir(args.output_dir)
+    if args.dropped_inputs is not None:
+        dropped = json.loads(args.dropped_inputs.read_text(encoding="utf-8"))
+        existing = output / DROPPED_INPUTS_FILE
+        if existing.is_file() and json.loads(existing.read_text(encoding="utf-8")) != dropped:
+            raise ValueError("Output already holds a different dropped-input list; use a fresh output directory")
+        write_json(existing, dropped)
+    dropped = load_dropped_inputs(output)
     model_manifest = json.loads((REFERENCE / "model_manifest.json").read_text())
     training_manifest = json.loads((REFERENCE / "training_manifest.json").read_text())
     selected = args.models or list(model_manifest["models"])
     specs = {model: reduced_spec(model, model_manifest["models"][model]) for model in model_manifest["models"]}
     if args.game_effects:
         specs = game_effects_specs(specs, model_manifest)
+    specs = apply_dropped_inputs(specs, dropped)
     specs = {model: specs[model] for model in (args.models or specs)}
     if args.summary_only:
         summaries, comparison = [], []

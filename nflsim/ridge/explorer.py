@@ -219,6 +219,7 @@ def main() -> None:
     if zero:
         fig.add_hline(y=0, line_dash="dot", line_color=ui.MUTED)
     event = st.plotly_chart(fig, on_select="rerun", selection_mode=("points", "box", "lasso"), key="ridge_graph")
+    ui.image_actions(fig, "ridge graph")
     selected = event.selection.points
     table = plotted
     if selected and mark in {"Line", "Scatter"}:

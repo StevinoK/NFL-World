@@ -1,9 +1,9 @@
-"""Report builder for Bayesian and Ridge synthetic-opponent simulations.
+"""Report builder for league rating simulations.
 
 Reads combined legacy `*_games.csv` or Ridge `games.csv` simulation rows and renders:
   1. Violin contours of point spread by team, team-colored, descending by median spread.
   2. Points-for vs points-against scatter with team logos as the markers.
-  3. A grid of LightSource-shaded scorigami heatmaps, one per team vs. the synthetic opponent.
+  3. A grid of LightSource-shaded scorigami heatmaps, one per team vs. the league.
 """
 
 from __future__ import annotations
@@ -30,8 +30,12 @@ from PIL import Image
 from scipy.ndimage import gaussian_filter
 from scipy.stats import gaussian_kde
 
+from nflsim import ui
+from nflsim.dashboard.power_ratings import load_ratings, our_team, save_ratings
 from nflsim.paths import ROOT
+from nflsim.sim.synthetic_games import team_games
 
+ui.style_matplotlib()
 LOGO_CACHE_DIR = ROOT / "outputs/team_logo_cache"
 RELIEF_EXAGGERATION = 15.0
 SCORIGAMI_CMAP = LinearSegmentedColormap.from_list(
@@ -157,9 +161,9 @@ def render_spread_violins(
     ax.set_xticks(np.arange(len(order)))
     ax.set_xticklabels(order, rotation=90, fontsize=9)
     site_label = "neutral site" if neutral else "home"
-    ax.set_ylabel(f"Point margin vs. synthetic opponent ({site_label})")
+    ax.set_ylabel(f"Point margin vs. the league ({site_label})")
     ax.set_title(
-        f"Simulated Point Margin vs. Replacement-Level Opponent ({site_label}) — middle {100 * (1 - 2 * trim):.0f}%"
+        f"Simulated Point Margin vs. the League ({site_label}) — middle {100 * (1 - 2 * trim):.0f}%"
     )
     ax.grid(axis="y", alpha=0.25, linewidth=0.6)
     fig.tight_layout()
@@ -212,9 +216,9 @@ def render_points_grid(games: pd.DataFrame, styles: pd.DataFrame, out_path: Path
     ax.set_ylim(summary["points_against"].min() - pad, summary["points_against"].max() + pad)
     # Better defense is fewer points allowed, so the strongest teams land bottom-right.
     ax.invert_yaxis()
-    ax.set_xlabel("Average points scored vs. synthetic opponent")
-    ax.set_ylabel("Average points allowed to synthetic opponent")
-    ax.set_title("Offense vs. Defense against a Replacement-Level Opponent")
+    ax.set_xlabel("Average points scored vs. the league")
+    ax.set_ylabel("Average points allowed to the league")
+    ax.set_title("Offense vs. Defense against the League")
     ax.grid(alpha=0.25, linewidth=0.6)
     fig.tight_layout()
     fig.savefig(out_path, dpi=150)
@@ -274,7 +278,7 @@ def render_scorigami_grid(games: pd.DataFrame, out_path: Path, columns: int = 8)
         extent = [all_scores[0] - 0.5, all_scores[-1] + 0.5, all_scores[0] - 0.5, all_scores[-1] + 0.5]
         ax.imshow(rgb, extent=extent, origin="lower", interpolation="nearest", aspect="equal")
         ax.plot([extent[0], extent[1]], [extent[2], extent[3]], color="black", linewidth=0.7, alpha=0.8)
-        ax.set_title(f"{team} vs SYN", fontsize=9)
+        ax.set_title(team, fontsize=9)
         ax.set_xticks(np.arange(0, axis_max + 1, 10))
         ax.set_yticks(np.arange(0, axis_max + 1, 10))
         ax.tick_params(labelsize=6)
@@ -283,8 +287,8 @@ def render_scorigami_grid(games: pd.DataFrame, out_path: Path, columns: int = 8)
         ax.axis("off")
 
     fig.supxlabel("Team points", fontsize=11)
-    fig.supylabel("Synthetic opponent points", fontsize=11)
-    fig.suptitle("Simulated Score Distributions vs. a Replacement-Level Opponent", fontsize=13)
+    fig.supylabel("Opponent points", fontsize=11)
+    fig.suptitle("Simulated Score Distributions vs. the League", fontsize=13)
     fig.tight_layout(rect=(0.01, 0.01, 1.0, 0.97))
     fig.savefig(out_path, dpi=150)
     plt.close(fig)
@@ -306,130 +310,91 @@ def logo_data_uri(styles: pd.DataFrame, team: str) -> Optional[str]:
     return f"data:image/png;base64,{embed(cached)}"
 
 
-TABLE_CSS = """
-table.summary { border-collapse: separate; border-spacing: 0; font-size: 13px; width: 100%;
-  max-width: 1200px; background: #fff; border: 1px solid #e4e4e4; border-radius: 8px; overflow: hidden; }
-table.summary th { font-size: 11px; letter-spacing: .04em; text-transform: uppercase; color: #5a5a5a;
-  background: #f5f5f4; padding: 9px 10px; text-align: right; border-bottom: 1px solid #e0e0e0; white-space: nowrap; }
-table.summary td { padding: 7px 10px; border-bottom: 1px solid #f0f0f0; vertical-align: middle; }
-table.summary tbody tr:hover { background: color-mix(in srgb, var(--team) 9%, #fff); }
-table.summary tbody tr:last-child td { border-bottom: none; }
-
-td.rank, th.rank { text-align: right; color: #9a9a9a; font-variant-numeric: tabular-nums; width: 34px; }
-td.team, th.team { text-align: left; }
-td.team { border-left: 4px solid var(--team); font-weight: 600; white-space: nowrap; }
-td.team .logo { width: 20px; height: 20px; object-fit: contain; border: none; border-radius: 0;
-  vertical-align: middle; margin-right: 7px; }
-td.team .logo.placeholder { display: inline-block; background: var(--team2); border-radius: 50%; }
-td.team .abbr { vertical-align: middle; }
-
-td.num { text-align: right; font-variant-numeric: tabular-nums; min-width: 92px; }
-td.num.plain { color: #666; }
-td.num .val { display: block; font-size: 12px; line-height: 1.1; margin-bottom: 3px; }
-td.num .track { position: relative; display: block; height: 6px; border-radius: 3px; background: #efefee; }
-td.num .bar { position: absolute; top: 0; height: 100%; border-radius: 3px; opacity: .85; }
-td.num .zero { position: absolute; left: 50%; top: -1px; width: 1px; height: calc(100% + 2px); background: #c4c4c4; }
+# Sim columns: key, label, format, the value that shades as neutral (None for the league average), distance to full shade.
+SIM_COLUMNS = [
+    ("mean_spread", "Spread", ui.signed, 0.0, ui.SPREAD_SCALE),
+    ("win_prob", "Win %", ui.percent, 0.5, ui.WIN_SCALE),
+    ("points_for", "Points for", ui.number, None, ui.POINTS_SCALE),
+    ("points_against", "Points against", ui.number, None, -ui.POINTS_SCALE),
+]
+TABLE_STYLE = f"""
+{ui.FONT_IMPORT}
+body {{ font-family: {ui.FONT}; color: {ui.INK}; background: {ui.CANVAS}; }}
+img.chart {{ max-width: 100%; border: 1px solid {ui.BORDER}; border-radius: 8px; }}
+{ui.TABLE_CSS}
 """
 
-# Columns rendered with an in-cell bar: label, format, and bar mode.
-SUMMARY_COLUMNS: List[Tuple[str, str, str]] = [
-    ("sims", "Sims", "plain"),
-    ("points_for", "Points For", "positive"),
-    ("points_against", "Points Against", "positive"),
-    ("median_spread", "Median Spread", "diverging"),
-    ("mean_spread", "Mean Spread", "diverging"),
-    ("spread_stdev", "Spread SD", "positive"),
-    ("median_total", "Median Total", "positive"),
-    ("win_prob", "Win Prob", "percent"),
-]
+
+def ratings_note(notes: Optional[dict]) -> str:
+    text = ("Spread is average margin against the league, so positive is good. Blue is better than average and orange worse, so few points "
+            "against is blue. ")
+    if not notes:
+        return text + "No outside ratings were available."
+    parts = [f'<a href="{item["page"]}" target="_blank">{item["label"]}</a>' + (f' ({item["as_of"]})' if item["as_of"] else "") for item in notes["sources"]]
+    text += ("Our gap is our spread minus the median outside rating: blue means we rate the team higher than outside sources, orange lower. "
+             f'Outside ratings were pulled {notes["pulled"]}, in points against an average team on a neutral field and centered on each '
+             f'source\'s league average: {", ".join(parts)}.')
+    if notes["failed"]:
+        text += f' Unavailable: {", ".join(item["label"] for item in notes["failed"])}.'
+    return text
 
 
-def _bar_cell(value: float, mode: str, lo: float, hi: float, color: str) -> str:
-    """Datawrapper-style cell: numeric label above a proportional bar."""
-    if mode == "percent":
-        text = f"{value * 100:.1f}%"
-    elif mode == "plain":
-        return f'<td class="num plain">{value:,.0f}</td>'
-    else:
-        text = f"{value:.2f}"
-
-    span = max(hi - lo, 1e-9)
-    if mode == "diverging":
-        extent = max(abs(lo), abs(hi), 1e-9)
-        frac = min(abs(value) / extent, 1.0) * 50.0
-        left, width = (50.0 - frac, frac) if value < 0 else (50.0, frac)
-        bar = (
-            f'<span class="bar" style="left:{left:.2f}%;width:{width:.2f}%;background:{color};"></span>'
-            '<span class="zero"></span>'
-        )
-    else:
-        frac = (value - lo) / span if mode != "percent" else value
-        width = min(max(frac, 0.0), 1.0) * 100.0
-        bar = f'<span class="bar" style="left:0;width:{width:.2f}%;background:{color};"></span>'
-    return f'<td class="num"><span class="val">{text}</span><span class="track">{bar}</span></td>'
-
-
-def summary_table_html(summary: pd.DataFrame, styles: pd.DataFrame) -> str:
-    ranges = {
-        key: (float(summary[key].min()), float(summary[key].max()))
-        for key, _, _ in SUMMARY_COLUMNS
-        if key in summary.columns
-    }
-    header = "".join(
-        f"<th>{label}</th>" for key, label, _ in SUMMARY_COLUMNS if key in ranges
-    )
+def summary_table_html(summary: pd.DataFrame, styles: pd.DataFrame, ratings: Optional[pd.DataFrame] = None, notes: Optional[dict] = None) -> str:
+    ratings = ratings if ratings is not None else pd.DataFrame(index=summary.team.map(our_team))
+    sources = list(ratings.columns)
+    medians = ratings.median(axis=1) if sources else None
+    neutral = {key: float(summary[key].mean()) if center is None else center for key, _, _, center, _ in SIM_COLUMNS}
+    groups = f'<th class="group" colspan="2"></th><th class="group start" colspan="{len(SIM_COLUMNS)}">Our simulations</th>'
+    labels = '<th>#</th><th class="text">Team</th>' + "".join(
+        f'<th{" class=start" if position == 0 else ""}>{label}</th>' for position, (_, label, _, _, _) in enumerate(SIM_COLUMNS))
+    if sources:
+        groups += f'<th class="group start" colspan="2">Against outside</th><th class="group start" colspan="{len(sources)}">Outside ratings</th>'
+        labels += '<th class="start">Median</th><th>Our gap</th>' + "".join(
+            f'<th{" class=start" if position == 0 else ""}>{source}</th>' for position, source in enumerate(sources))
 
     rows = []
     for rank, row in enumerate(summary.itertuples(index=False), start=1):
-        team = getattr(row, "team")
-        style = style_for(styles, team)
-        primary = style.get("team_color") or "#666666"
-        secondary = style.get("team_color2") or "#222222"
+        team = row.team
         logo = logo_data_uri(styles, team)
-        badge = (
-            f'<img class="logo" src="{logo}" alt="{team}" />'
-            if logo
-            else '<span class="logo placeholder"></span>'
-        )
+        badge = f'<img class="logo" src="{logo}" alt="" />' if logo else ""
         cells = "".join(
-            _bar_cell(float(getattr(row, key)), mode, *ranges[key], primary)
-            for key, _, mode in SUMMARY_COLUMNS
-            if key in ranges
+            ui.table_cell(text_format(float(getattr(row, key))), (float(getattr(row, key)) - neutral[key]) / scale, "lead start" if position == 0 else "")
+            for position, (key, _, text_format, _, scale) in enumerate(SIM_COLUMNS)
         )
-        rows.append(
-            f'<tr style="--team:{primary};--team2:{secondary};">'
-            f'<td class="rank">{rank}</td>'
-            f'<td class="team">{badge}<span class="abbr">{team}</span></td>'
-            f"{cells}</tr>"
-        )
+        if sources:
+            rated = our_team(team) in ratings.index
+            median = float(medians[our_team(team)]) if rated else float("nan")
+            gap = float(row.mean_spread) - median
+            cells += ui.table_cell(ui.signed(median), median / ui.SPREAD_SCALE, "start") + ui.table_cell(ui.signed(gap), gap / ui.GAP_SCALE, "shaded")
+            for position, source in enumerate(sources):
+                value = float(ratings.at[our_team(team), source]) if rated else float("nan")
+                cells += ui.table_cell(ui.signed(value), value / ui.SPREAD_SCALE, "start" if position == 0 else "")
+        rows.append(f'<tr><td class="rank">{rank}</td><td class="text team">{badge}{team}</td>{cells}</tr>')
 
-    return (
-        '<table class="summary"><thead><tr><th class="rank">#</th><th class="team">Team</th>'
-        f"{header}</tr></thead><tbody>" + "".join(rows) + "</tbody></table>"
-    )
+    return (f'<table class="nfl-table"><thead><tr>{groups}</tr><tr>{labels}</tr></thead><tbody>' + "".join(rows)
+            + f'</tbody></table><div class="nfl-note">{ratings_note(notes)}</div>')
 
 
 def write_html(
     paths: Dict[str, Path], summary: pd.DataFrame, styles: pd.DataFrame, out_path: Path,
-    site_label: str = "home",
+    site_label: str = "home", ratings: Optional[pd.DataFrame] = None, notes: Optional[dict] = None,
 ) -> Path:
     sections = "\n".join(
-        f'<h2>{title}</h2><img src="data:image/png;base64,{embed(path)}" />'
+        f'<h2>{title}</h2><img class="chart" src="data:image/png;base64,{embed(path)}" />'
         for title, path in paths.items()
     )
     html = f"""<!doctype html>
-<html><head><meta charset="utf-8"><title>Synthetic Opponent Simulation Report</title>
+<html><head><meta charset="utf-8"><title>League Ratings Report</title>
 <style>
-body {{ font-family: Segoe UI, Arial, sans-serif; margin: 28px; color: #1c1c1c; background: #fbfbfa; }}
-img {{ max-width: 100%; border: 1px solid #ddd; border-radius: 6px; }}
-{TABLE_CSS}
+{TABLE_STYLE}
+body {{ margin: 28px; }}
 </style></head>
 <body>
-<h1>Synthetic Opponent Simulation Report ({site_label})</h1>
+<h1>League Ratings Report ({site_label})</h1>
 <p>Team labels identify the ranked team; scores are not adjusted for home-field advantage.</p>
 {sections}
 <h2>Team Summary</h2>
-{summary_table_html(summary, styles)}
+{summary_table_html(summary, styles, ratings, notes)}
 </body></html>"""
     out_path.write_text(html, encoding="utf-8")
     return out_path
@@ -439,22 +404,23 @@ def write_table_html(
     summary: pd.DataFrame,
     styles: pd.DataFrame,
     out_path: Path,
-    title: str = "Simulated Team Strength vs. a Replacement-Level Opponent",
+    title: str = "League Ratings",
+    ratings: Optional[pd.DataFrame] = None,
+    notes: Optional[dict] = None,
 ) -> Path:
     """Standalone, self-contained table page (logos inlined) for embedding elsewhere."""
     html = f"""<!doctype html>
 <html><head><meta charset="utf-8"><title>{title}</title>
 <style>
-body {{ font-family: Segoe UI, Arial, sans-serif; margin: 0; padding: 20px; color: #1c1c1c;
-  background: #fff; display: inline-block; }}
+{TABLE_STYLE}
+body {{ margin: 0; padding: 20px; }}
 h2.table-title {{ font-size: 18px; margin: 0 0 4px; }}
-p.table-sub {{ font-size: 12px; color: #777; margin: 0 0 12px; }}
-{TABLE_CSS}
+p.table-sub {{ font-size: 12px; color: {ui.MUTED}; margin: 0 0 12px; }}
 </style></head>
 <body>
 <h2 class="table-title">{title}</h2>
-<p class="table-sub">Each team simulated against an identical synthetic opponent.</p>
-{summary_table_html(summary, styles)}
+<p class="table-sub">Each team simulated against every team in the league, itself included. Ranked by simulated spread.</p>
+{summary_table_html(summary, styles, ratings, notes)}
 </body></html>"""
     out_path.write_text(html, encoding="utf-8")
     return out_path
@@ -502,50 +468,67 @@ def team_summary(games: pd.DataFrame) -> pd.DataFrame:
             "win_prob": grouped["_win"].mean().to_numpy(),
         }
     )
-    return summary.sort_values("median_spread", ascending=False).reset_index(drop=True)
+    return summary.sort_values("mean_spread", ascending=False).reset_index(drop=True)
 
 
 # ------------------------------------------------------------------- driver
 
 
-def build_report(
-    folder: Path, out_dir: Optional[Path] = None, table_png: bool = True
-) -> Path:
-    games = load_games(folder)
-    styles = team_style()
-    target = out_dir or folder
-    target.mkdir(parents=True, exist_ok=True)
-    neutral = "neutral_site" in games and games.neutral_site.fillna(False).astype(bool).all()
-    site_label = "neutral site" if neutral else "home"
+CHART_TITLES = {
+    "Point Spread Distributions": "synthetic_spread_violins.png",
+    "Points For vs. Points Against": "synthetic_points_grid.png",
+    "Score Heatmaps vs. the League": "synthetic_scorigami_grid.png",
+}
 
-    paths = {
-        "Point Spread Distributions": render_spread_violins(
-            games, styles, target / "synthetic_spread_violins.png"
-        ),
-        "Points For vs. Points Against": render_points_grid(
-            games, styles, target / "synthetic_points_grid.png"
-        ),
-        "Score Heatmaps vs. Synthetic Opponent": render_scorigami_grid(
-            games, target / "synthetic_scorigami_grid.png"
-        ),
-    }
+
+def _write_tables(games: pd.DataFrame, styles: pd.DataFrame, target: Path, table_png: bool, ratings: pd.DataFrame, notes: dict) -> None:
+    """Everything in the report that holds the team table; charts must already be in the folder."""
+    neutral = "neutral_site" in games and games.neutral_site.fillna(False).astype(bool).all()
     summary = team_summary(games)
-    summary.to_csv(target / "synthetic_report_summary.csv", index=False)
-    report = write_html(paths, summary, styles, target / "synthetic_report.html", site_label)
-    table_html = write_table_html(summary, styles, target / "synthetic_summary_table.html")
+    summary.assign(rating_team=summary.team.map(our_team)).merge(ratings, left_on="rating_team", right_index=True, how="left").drop(columns="rating_team").to_csv(target / "synthetic_report_summary.csv", index=False)
+    paths = {title: target / name for title, name in CHART_TITLES.items()}
+    report = write_html(paths, summary, styles, target / "synthetic_report.html", "neutral site" if neutral else "home", ratings, notes)
+    table_html = write_table_html(summary, styles, target / "synthetic_summary_table.html", ratings=ratings, notes=notes)
     print(f"Wrote {report}")
     print(f"Wrote {table_html}")
     if table_png:
         png = export_table_png(table_html, target / "synthetic_summary_table.png")
         if png:
             print(f"Wrote {png}")
-    for path in paths.values():
-        print(f"Wrote {path}")
-    return report
+
+
+def refresh_ratings(folder: Path, out_dir: Optional[Path] = None) -> dict:
+    """Pull the outside ratings again and rewrite the team table, leaving the charts alone."""
+    target = out_dir or folder
+    ratings, notes = save_ratings(target)
+    _write_tables(team_games(load_games(folder)), team_style(), target, False, ratings, notes)
+    return notes
+
+
+def rebuild_tables(folder: Path, out_dir: Optional[Path] = None) -> None:
+    """Rewrite the team table from the saved ratings, for reports built before a table change."""
+    target = out_dir or folder
+    ratings, notes = load_ratings(target)
+    _write_tables(team_games(load_games(folder)), team_style(), target, False, ratings, notes)
+
+
+def build_report(
+    folder: Path, out_dir: Optional[Path] = None, table_png: bool = True
+) -> Path:
+    games = team_games(load_games(folder))
+    styles = team_style()
+    target = out_dir or folder
+    target.mkdir(parents=True, exist_ok=True)
+    render_spread_violins(games, styles, target / CHART_TITLES["Point Spread Distributions"])
+    render_points_grid(games, styles, target / CHART_TITLES["Points For vs. Points Against"])
+    render_scorigami_grid(games, target / CHART_TITLES["Score Heatmaps vs. the League"])
+    ratings, notes = save_ratings(target)
+    _write_tables(games, styles, target, table_png, ratings, notes)
+    return target / "synthetic_report.html"
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Build a report from synthetic-opponent simulations.")
+    parser = argparse.ArgumentParser(description="Build a report from league rating simulations.")
     parser.add_argument("folder", type=Path, help="Run folder holding games.csv or synthetic_games.csv.")
     parser.add_argument("--out-dir", type=Path, default=None, help="Where to write the report (defaults to the folder).")
     parser.add_argument("--no-table-png", action="store_true", help="Skip the Playwright screenshot of the summary table.")

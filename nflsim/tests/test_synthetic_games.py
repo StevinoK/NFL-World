@@ -1,7 +1,8 @@
 import numpy as np
 import pandas as pd
 
-from nflsim.sim.synthetic_games import build_synthetic_game, synthetic_game_row, synthetic_team_options
+from nflsim.sim.synthetic_games import (LeagueTeam, build_league_games, league_game, league_pairs, prepare_league_team,
+                                        synthetic_game_row, synthetic_team_options, team_games, team_table)
 
 
 def test_cli_recreates_output_directory_removed_during_simulation(monkeypatch, tmp_path):
@@ -13,11 +14,11 @@ def test_cli_recreates_output_directory_removed_during_simulation(monkeypatch, t
     from nflsim.sim import synthetic_games
 
     schedule, teams, roster, depth, players = inputs()
-    game_id = "2024_02_SYN_A"
+    game_id = "2024_02_PAIR_A_B"
     destination = tmp_path / "outputs/synthetic/recreated"
     runtime = SimpleNamespace(player_stats_wide=players, team_stats_wide=teams)
     game_rows = pd.DataFrame([{
-        "game_id": game_id, "home_team": "A", "away_team": "SYN",
+        "game_id": game_id, "home_team": "A", "away_team": "B",
         "simulation": 1, "home_score": 21, "away_score": 14,
         "spread": 7, "total": 35,
     }])
@@ -33,14 +34,14 @@ def test_cli_recreates_output_directory_removed_during_simulation(monkeypatch, t
 
     monkeypatch.setattr(sys, "argv", [
         "synthetic_games", "--backend", "local", "--season", "2024", "--week", "2",
-        "--teams", "A", "--simulations", "1", "--run-id", "recreated",
+        "--teams", "A", "--simulations", "2", "--run-id", "recreated",
     ])
     monkeypatch.setattr(bundle, "validate_bundle", lambda *args: None)
     monkeypatch.setattr(bundle, "verify_bundle_hash", lambda *args: "test-hash")
     monkeypatch.setattr(synthetic_games, "ROOT", tmp_path)
     monkeypatch.setattr(synthetic_games, "RidgeRuntime", lambda *args, **kwargs: runtime)
     monkeypatch.setattr(synthetic_games, "_load_inputs", lambda *args: (schedule, roster, depth))
-    monkeypatch.setattr(synthetic_games, "build_synthetic_game", lambda *args, **kwargs: SimpleNamespace(game_id=game_id))
+    monkeypatch.setattr(synthetic_games, "build_league_games", lambda *args, **kwargs: ([SimpleNamespace(game_id=game_id, home_team="A")], []))
     monkeypatch.setattr(synthetic_games, "execute_ridge_games", simulate)
     monkeypatch.setattr(synthetic_games, "output_dir", make_output)
     monkeypatch.setattr(synthetic_games, "write_json", lambda path, value: path.write_text(json.dumps(value)))
@@ -94,84 +95,60 @@ def inputs():
     return schedule, team_stats, roster, depth, player_stats
 
 
-def test_synthetic_inputs_use_neutral_site_and_zero_venue_effects():
-    runtime = Runtime()
+def league_team(name, epa):
+    return LeagueTeam(name, 2024, {"epa_rate": epa, "opp_pass_epa_rate": 99.0}, [{"player": name}])
+
+
+def test_league_field_includes_each_team_itself():
+    assert league_pairs(["A", "B", "C"]) == [("A", "A"), ("A", "B"), ("A", "C"), ("B", "B"), ("B", "C"), ("C", "C")]
+
+
+def test_selected_team_still_plays_the_whole_field():
+    assert league_pairs(["A", "B", "C"], ["B"]) == [("A", "B"), ("B", "B"), ("B", "C")]
+
+
+def test_pairing_is_neutral_and_uses_the_real_opponent():
+    game = league_game(league_team("A", 1.0), league_team("B", 2.0), 3, 64)
+    assert game.game_id == "2024_03_PAIR_A_B" and game.simulations == 64
+    assert game.neutral_site and game.swap_home_away_halfway and game.roof == "outdoors"
+    assert game.team_features["A"]["opp_pass_epa_rate"] == 2.0 and game.team_features["B"]["opp_pass_epa_rate"] == 1.0
+
+
+def test_team_against_itself_counts_as_one_opponent():
+    game = league_game(league_team("A", 1.0), league_team("A", 1.0), 3, 64)
+    assert game.simulations == 32 and game.home_team == game.away_team == "A"
+    assert game.team_features["A"]["opp_pass_epa_rate"] == 1.0
+    rows = pd.DataFrame({"home_team": ["A"] * game.simulations, "away_team": "A", "home_score": 21, "away_score": 14, "spread": 7, "total": 35})
+    seen = team_games(rows)
+    assert len(seen) == 64 and seen.spread.mean() == 0
+
+
+def test_team_games_keeps_only_teams_that_faced_the_whole_field():
+    rows = pd.DataFrame([("A", "A", 20, 10), ("A", "B", 30, 20), ("A", "C", 24, 14)], columns=["home_team", "away_team", "home_score", "away_score"])
+    rows = rows.assign(spread=rows.home_score - rows.away_score, total=rows.home_score + rows.away_score)
+    seen = team_games(rows)
+    assert set(seen.home_team) == {"A"} and set(seen.away_team) == {"A", "B", "C"}
+    table = team_table(rows).iloc[0]
+    assert table.team == "A" and table.simulations == 4 and table.margin_mean == 5
+
+
+def test_team_games_reads_old_runs_without_the_averaged_opponent():
+    rows = pd.DataFrame([("A", "SYN", 24, 17), ("B", "SYN", 10, 20)], columns=["home_team", "away_team", "home_score", "away_score"])
+    rows = rows.assign(spread=rows.home_score - rows.away_score, total=rows.home_score + rows.away_score)
+    assert sorted(team_games(rows).home_team) == ["A", "B"]
+
+
+def test_league_team_has_no_venue_effect_and_ignores_later_games():
     schedule, teams, roster, depth, players = inputs()
-    game = build_synthetic_game(runtime, players, teams, roster, depth, schedule, "A", schedule.iloc[1], 2)
-    home = game.team_features["A"]
-    synthetic = game.team_features["SYN"]
-    assert home["ridge_yac_oe_venue_effect"] == 0
-    assert synthetic["ridge_yac_oe_venue_effect"] == 0
-    assert game.neutral_site is True
-    assert np.isclose(synthetic["ridge_yac_oe_offense_effect"], 0.1)
-    assert np.isclose(synthetic["epa_rate"], 5.0 / 3.0)
-    assert len(game.away_players) == 11
+    later = teams[teams.game_id.eq("2024_02_A_B")].assign(game_id="2024_03_A_B", game_date="2024-09-15", epa_rate=50)
+    team = prepare_league_team(Runtime(), players, pd.concat([teams, later]), roster, depth, schedule, "A", 2)
+    assert team.features["ridge_yac_oe_venue_effect"] == 0.0
+    assert team.features["epa_rate"] == 2
+    assert team.features["opp_days_rest"] == 7.0
+    assert len(team.players) == 11
 
 
-def test_synthetic_baseline_uses_latest_equal_weighted_league_snapshots():
-    runtime = Runtime()
-    schedule, teams, roster, depth, players = inputs()
-    old_team_row = teams.loc[teams.team.eq("B")].iloc[[0]].copy()
-    old_team_row["game_id"] = "2024_00_B_C"
-    old_team_row["game_date"] = "2024-08-25"
-    old_team_row["epa_rate"] = 99.0
-    teams = pd.concat([teams, old_team_row], ignore_index=True)
-
-    players.loc[players.player_id.eq("QB1"), "yac_bayes"] = 3.0
-    old_qb_row = players.loc[players.player_id.eq("QB1")].iloc[[0]].copy()
-    old_qb_row["game_id"] = "2024_00_B_C"
-    old_qb_row["game_date"] = "2024-08-25"
-    old_qb_row["yac_bayes"] = 99.0
-    players = pd.concat([players, old_qb_row], ignore_index=True)
-
-    other_roster = roster.copy()
-    other_roster["team"] = "B"
-    other_roster["game_id"] = schedule.iloc[1].game_id
-    other_roster["player_id"] = "B_" + other_roster.player_id
-    roster = pd.concat([roster, other_roster], ignore_index=True)
-    other_players = players.sort_values(["game_date", "game_id"]).drop_duplicates("player_id", keep="last").copy()
-    other_players["player_id"] = "B_" + other_players.player_id
-    players = pd.concat([players, other_players], ignore_index=True)
-
-    game = build_synthetic_game(runtime, players, teams, roster, depth, schedule, "A", schedule.iloc[1], 1)
-
-    assert np.isclose(game.team_features["SYN"]["epa_rate"], 5.0 / 3.0)
-    synthetic_by_slot = {player["position"]: player["attributes"] for player in game.away_players}
-    assert synthetic_by_slot["QB1"]["yac_bayes"] == 3.0
-    assert synthetic_by_slot["WR1"]["yac_bayes"] == 1.0
-
-
-def test_synthetic_baseline_includes_tested_team_current_week_inputs():
-    runtime = Runtime()
-    schedule, teams, roster, depth, players = inputs()
-    current_game = schedule.iloc[1]
-
-    current_team_rows = teams[teams.game_id.eq(current_game.game_id)].copy()
-    current_team_rows["epa_rate"] = current_team_rows.team.map({"A": 100.0, "B": 8.0})
-    teams.loc[teams.game_id.eq(current_game.game_id), "epa_rate"] = current_team_rows["epa_rate"].to_numpy()
-
-    other_roster = roster.copy()
-    other_roster["team"] = "B"
-    other_roster["game_id"] = current_game.game_id
-    other_roster["player_id"] = "B_" + other_roster.player_id
-    roster = pd.concat([roster, other_roster], ignore_index=True)
-
-    current_player_rows = players.copy()
-    current_player_rows["game_id"] = current_game.game_id
-    current_player_rows["game_date"] = current_game.gameday
-    current_player_rows["player_id"] = "B_" + current_player_rows.player_id
-    current_player_rows["yac_bayes"] = 8.0
-    players = pd.concat([players, current_player_rows], ignore_index=True)
-
-    game = build_synthetic_game(runtime, players, teams, roster, depth, schedule, "A", current_game, 1,
-                                use_model_rank=False)
-
-    assert np.isclose(game.team_features["SYN"]["epa_rate"], (100.0 + 8.0 + 1.0) / 3.0)
-    synthetic_by_slot = {player["position"]: player["attributes"] for player in game.away_players}
-    assert np.isclose(synthetic_by_slot["QB1"]["yac_bayes"], 4.5)
-
-
-def test_synthetic_selection_includes_away_and_bye_teams():
+def test_bye_team_is_rated_from_its_latest_inputs():
     schedule, teams, roster, depth, players = inputs()
     assert synthetic_team_options(schedule) == ["A", "B", "C"]
     assert synthetic_game_row(schedule, "B", 2).game_id == "2024_02_A_B"
@@ -179,17 +156,27 @@ def test_synthetic_selection_includes_away_and_bye_teams():
     assert bye_row.gameday == pd.Timestamp("2024-09-08")
     assert bye_row.week == 2
     roster["team"] = "C"
-    game = build_synthetic_game(Runtime(), players, teams, roster, depth, schedule, "C", bye_row, 1)
-    assert game.home_team == "C"
-    assert game.neutral_site
-    assert len(game.home_players) == 11
+    assert prepare_league_team(Runtime(), players, teams, roster, depth, schedule, "C", 2).name == "C"
 
 
-def test_neutral_synthetic_game_does_not_require_home_stadium_history():
+def test_a_team_that_cannot_be_prepared_is_reported_and_left_out(monkeypatch):
+    from nflsim.sim import synthetic_games
     schedule, teams, roster, depth, players = inputs()
-    schedule = schedule.drop(columns="stadium_id")
-    game = build_synthetic_game(Runtime(), players, teams, roster, depth, schedule, "A", schedule.iloc[1], 10)
+
+    def prepare(runtime, player_stats, team_stats, roster, depth, schedule, team, week, rank):
+        if team == "C":
+            raise ValueError("no lineup")
+        return league_team(team, 1.0)
+
+    monkeypatch.setattr(synthetic_games, "prepare_league_team", prepare)
+    games, failures = build_league_games(None, players, teams, roster, depth, schedule, 2, 4)
+    assert failures == [{"team": "C", "error": "no lineup"}]
+    assert [game.game_id for game in games] == ["2024_02_PAIR_A_A", "2024_02_PAIR_A_B", "2024_02_PAIR_B_B"]
+
+
+def test_league_game_becomes_neutral_tasks_that_swap_halfway():
     from nflsim.sim.execution import build_ridge_tasks
+    game = league_game(league_team("A", 1.0), league_team("B", 2.0), 3, 10)
     tasks = build_ridge_tasks([game], "bundle", "hash", "neutral-run", 42, 2)
     assert all(task["neutral_site"] is True for task in tasks)
     assert all(task["swap_home_away_halfway"] is True for task in tasks)
@@ -216,30 +203,6 @@ def test_neutral_runtime_uses_same_home_away_encoding_for_both_sides():
     assert np.array_equal(runtime.transform_with_processor("play", frame), [[.5, .5, 3.0], [.5, .5, 4.0]])
     runtime.neutral_site = False
     assert np.array_equal(runtime.transform_with_processor("play", frame), [[1.0, 0.0, 3.0], [0.0, 1.0, 4.0]])
-
-
-def test_future_feature_perturbations_do_not_change_synthetic_baseline():
-    runtime = Runtime()
-    schedule, teams, roster, depth, players = inputs()
-    baseline = build_synthetic_game(runtime, players, teams, roster, depth, schedule, "A", schedule.iloc[1], 1)
-    changed_teams = teams.copy()
-    changed_players = players.copy()
-    future_schedule = pd.DataFrame([{"game_id": "2024_03_A_D", "season": 2024, "week": 3,
-                                     "gameday": "2024-09-15", "home_team": "A", "away_team": "D",
-                                     "stadium_id": "STADIUM-A", "roof": "outdoors", "game_type": "REG"}])
-    future_team_rows = teams[teams.game_id.eq("2024_02_A_B")].copy()
-    future_team_rows["game_id"], future_team_rows["game_date"] = "2024_03_A_D", "2024-09-15"
-    future_team_rows[["epa_rate", "ridge_yac_oe_venue_effect"]] = 999
-    changed_teams = pd.concat([changed_teams, future_team_rows], ignore_index=True)
-    future_player_rows = players.copy()
-    future_player_rows["game_id"], future_player_rows["game_date"] = "2024_03_A_D", "2024-09-15"
-    future_player_rows[["yac_bayes", "ridge_yac_oe_venue_effect"]] = 999
-    changed_players = pd.concat([changed_players, future_player_rows], ignore_index=True)
-    future_schedule = pd.concat([schedule, future_schedule], ignore_index=True)
-    perturbed = build_synthetic_game(runtime, changed_players, changed_teams, roster, depth, future_schedule, "A", schedule.iloc[1], 1)
-    assert baseline.team_features["SYN"]["epa_rate"] == perturbed.team_features["SYN"]["epa_rate"]
-    assert baseline.team_features["SYN"]["ridge_yac_oe_venue_effect"] == perturbed.team_features["SYN"]["ridge_yac_oe_venue_effect"]
-    assert baseline.away_players[0]["attributes"]["yac_bayes"] == perturbed.away_players[0]["attributes"]["yac_bayes"]
 
 
 def test_load_inputs_uses_live_current_season_when_snapshot_is_stale(tmp_path, monkeypatch):

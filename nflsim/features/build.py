@@ -295,8 +295,8 @@ def build_feature_tables(pbp, schedule, roster, snap_counts, parameters_path, ou
                                                "cross-season decay 0.8, 25th pct replacement; raw values are direct Torch inputs and joint-ridge regressors",
                                  "tables": {name: digest(output / name) for name in ("player_value.csv", "ridge_pv_coefficients.csv")}},
                 "weather": {"columns": list(WEATHER_COLUMNS),
-                            "definition": "outdoor-only temperature (F, centered at 60 and scaled by 20) and wind (mph scaled by 15), clipped to [-2, 2]; missing outdoor weather is flagged",
-                            "source": "historical game-observed PBP/schedule weather; future games need forecast inputs"}}
+                            "definition": "outdoor-only temperature (F, centered at 60 and scaled by 20), wind (mph scaled by 15) and precipitation (log1p of mm over 2), clipped; missing outdoor weather is flagged",
+                            "source": "pregame forecasts at sim time and in model training; these team-table copies are replaced at sim time"}}
     write_json(output / "feature_manifest.json", manifest)
     return manifest
 

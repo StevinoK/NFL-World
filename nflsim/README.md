@@ -45,7 +45,7 @@ the position's 25th-percentile replacement level.
 | `engine/` | Shared torch simulation runtime, model architectures, cascade trainer, fantasy scoring, chunk execution |
 | `sim/` | Ridge runtime adapter, local execution, synthetic games, 2025 benchmark and comparison |
 | `remote/` | Modal app, worker and artifact upload |
-| `dashboard/`, `dfs/` | Streamlit simulation dashboard and DFS optimizer |
+| `dashboard/`, `dfs/` | Streamlit simulation dashboard and DFS optimizer; shared look in `ui.py`, rules in `dashboard/STYLE_GUIDE.md` |
 | `artifacts/`, `outputs/`, `benchmarks/`, `training/`, `config/` | Data: bundles and inputs, run outputs, benchmark runs, training reports, frozen config snapshot |
 
 ```powershell
@@ -118,13 +118,13 @@ The Ridge workflow uses the Ridge-trained sealed bundle (`RidgeRuntime` and
 `RidgeGame`), not the Bayesian-trained runtime. The existing Bayesian dashboard,
 workers, model files, outputs and Modal app remain separate and unchanged. The
 parallel Ridge UI is selectable by launching its own app; it writes only under
-`nflsim/outputs/`. It offers single-game, full-week and synthetic home
-games, with unchanged fantasy scoring and fantasy correlation outputs. The DFS
+`nflsim/outputs/`. It offers single-game, full-week and league ratings
+runs, with unchanged fantasy scoring and fantasy correlation outputs. The DFS
 dashboard continues to load the selected player-simulation CSV as before.
 For **Single game**, enable **Customize depth chart and player inputs** to choose
 players for each trained slot and edit one selected player's runtime input values;
-apply or reset that player's edits before running. **Synthetic opponents** offers
-the same controls for the selected home team. **Full week** intentionally uses
+apply or reset that player's edits before running. **League ratings** offers
+the same controls for the selected team, in all of its games. **Full week** intentionally uses
 model-ranked lineups for each game to avoid an unwieldy page of per-game editors.
 The sidebar's **Save folder** is the parent directory; each run is saved to a new
 `<Save folder>/<Run ID>/` folder. Existing run folders are never overwritten.
@@ -148,15 +148,15 @@ are retrained or the feature is removed and models are retrained.
 & $py -m nflsim.dashboard.run
 ```
 
-### Run Synthetic Power Rankings
+### Run League Ratings
 
 1. Reload the dashboard, choose the latest weekly bundle, and select season/week.
-2. Set **Run type** to **Synthetic opponents**. All 32 teams are selected by
+2. Set **Run type** to **League ratings**. All 32 teams are selected by
   default, including bye teams.
 3. Choose **Local** to run without Modal upload or deployment, set simulations
-  per team, and give the run a unique **Run ID**.
+  per pairing (64 gives each team about 2,000), and give the run a unique **Run ID**.
 4. Click **Run Ridge simulations**, not **Upload selected Ridge bundle**.
-  Dashboard synthetic output defaults to the repository's
+  Dashboard output defaults to the repository's
   `outputs/simulations/synthetic_home_week_<week>/<Run ID>/` directory.
 5. For **Modal**, first upload the selected bundle with explicit confirmation.
   Repeated uploads verify existing files and upload only missing files; conflicting
@@ -165,23 +165,23 @@ are retrained or the feature is removed and models are retrained.
   **Modal** and click **Run Ridge simulations**. Uploading alone does not deploy
   code or run simulations.
 
-Equivalent bounded synthetic CLI run (local, one home team, five simulations):
+The League Ratings results page ranks teams by simulated spread and adds FPI, nfelo,
+Inpredictable, Sagarin and TeamRankings, pulled when the report is built and kept until
+**Refresh outside ratings** is clicked. The Weekly Matchups page adds Kalshi and Polymarket
+spread and home win odds, read when the page loads and frozen at kickoff.
+
+Equivalent bounded CLI run (local, one team against the league, four simulations per pairing):
 
 ```powershell
 & $py -m nflsim.sim.synthetic_games --backend local --season 2025 `
-  --week 1 --teams PHI --simulations 5 --parallelism 1 --run-id ridge-syn-smoke
+  --week 1 --teams PHI --simulations 4 --parallelism 1 --run-id ridge-league-smoke
 ```
 
-Synthetic rows use player/team history strictly before kickoff, set the
-synthetic-offense effect to zero, and play at a neutral site with zero venue
-effects for both teams. Home/away model inputs use the midpoint of their trained
-encodings; home/away output labels identify teams only. The scheduled roof is retained.
-Synthetic selection includes every team in the season schedule, including away
-and bye teams. Bye teams use the selected week's Sunday as their feature cutoff,
-their latest available pregame features and roster, and an outdoor neutral site.
-Outputs (game scores, fantasy-scored player rows, summary and run manifest) are
-written under `outputs/synthetic/<run-id>/`. Modal requires the Ridge app and
-bundle to have been explicitly deployed/uploaded first.
+Each team plays all 32 teams, itself included, so every rating comes from the same field. A team's own game gets half the
+simulations, because both sides count for that team. Pairings are at a neutral site with zero venue effects, in the same mild
+outdoor weather (60F, 7 mph, no rain), so a rating doesn't move with one week's forecast. Home/away model inputs use the midpoint
+of their trained encodings; home/away output labels identify teams only. Bye teams use the selected week's Sunday as their
+feature cutoff. A margin of 0 means a league-average team.
 
 ## Validation Status
 
@@ -246,9 +246,8 @@ Ridge parameters.
   the isolated Ridge volume; it neither deploys code nor starts simulations.
   The Ridge Modal app must have been deployed once. After a bundle upload, select
   Modal and run the desired Ridge game/week.
-6. Select **Synthetic opponents** for home-versus-synthetic games. The synthetic
-  offense context is neutral, venue context matches the home stadium, and baseline
-  player/team values use rows strictly before kickoff.
+6. Select **League ratings** to run each team against the whole league at a neutral
+  site. Player and team values use each team's own rows for that week.
 
 The same refresh is available programmatically via
 `nflsim.features.weekly_refresh.refresh_weekly_bundle(season)`, but dashboard use is
@@ -412,7 +411,7 @@ and packages like any other refit. Each model's `{model}_seed_average.json` reco
 
 - **Simulate:** Game Simulator; Season QB Experiments, which compares the rest of a season under a new starter through
   `nflsim.sim.season.run_experiment` (the same code as `python -m nflsim.sim.season --move`).
-- **Results:** Weekly Matchups, for saved full-week runs against the market; Synthetic Report, for saved runs against the synthetic opponent.
+- **Results:** Weekly Matchups, for saved full-week runs against the market; League Ratings, for saved runs of every team against the league.
 - **Tools:** DFS Optimizer, Ridge Graph Builder, Player Estimates.
 
 The individual dashboards still run on their own through `nflsim/dashboard/launch.py`.

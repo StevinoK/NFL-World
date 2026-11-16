@@ -5,7 +5,7 @@ import pandas as pd
 import pytest
 
 from nflsim.sim import standings
-from nflsim.sim.season import Move, apply_moves, game_changes, parse_move, play_seasons, quarterbacks
+from nflsim.sim.season import Move, apply_moves, game_changes, parse_move, play_seasons, quarterbacks, season_points, season_table
 from nflsim.sim.standings import INDEX, Season, break_tie, seed
 
 RNG = np.random.default_rng(0)
@@ -101,3 +101,34 @@ def test_game_changes_compares_only_rerun_games():
     assert table.margin_base[0] == 5 and table.margin_experiment[0] == 0
     assert table.home_win_base[0] == 0.75 and table.home_win_experiment[0] == 0.5
     assert table.total_base[0] == 45 and table.total_experiment[0] == 40
+
+
+def _small_league():
+    teams = list(standings.TEAMS)
+    schedule = pd.DataFrame({"game_id": [f"G{i:02d}" for i in range(32)], "week": 1,
+                             "home_team": teams, "away_team": teams[1:] + teams[:1],
+                             "home_score": [21.0] * 16 + [np.nan] * 16, "away_score": [17.0] * 16 + [np.nan] * 16})
+    sims = pd.DataFrame([(f"G{i:02d}", s, 20 + s % 3, 21) for i in range(16, 32) for s in range(1, 5)],
+                        columns=["game_id", "simulation", "home_score", "away_score"])
+    return schedule, sims
+
+
+def test_season_points_use_the_same_draws_as_wins():
+    schedule, sims = _small_league()
+    wins, _ = play_seasons(schedule, sims, 50, seed=7)
+    scored, allowed = season_points(schedule, sims, 50, seed=7)
+    assert np.allclose(scored.sum(1), allowed.sum(1))
+    # Team 16 hosts game G16 (its only remaining home game) and won it exactly when it scored 22 at home.
+    home = standings.INDEX[standings.TEAMS[16]]
+    table = season_table(schedule, sims, 50, seed=7)
+    rows = table[table.team.eq(standings.TEAMS[16])]
+    assert len(table) == 50 * 32 and rows.wins.tolist() == wins[:, home].tolist()
+    assert set(rows.points_for - rows.points_for.min()) <= {0, 1, 2}
+
+
+def test_season_table_counts_played_points():
+    schedule, sims = _small_league()
+    table = season_table(schedule, sims, 10, seed=1)
+    first = table[table.team.eq(standings.TEAMS[0])]
+    # Team 0 hosted G00 (21-17) and is the away side in G31 (scores 21).
+    assert first.points_for.eq(42).all() and first.points_against.min() >= 17 + 20

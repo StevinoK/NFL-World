@@ -2,7 +2,7 @@
 
 Every play model m gets a logit shift that is constant within a team-game:
 
-    shift_m = b_m + G_m u_game + T_m u_team + s_m * v_team,m,
+    shift_m = b_m + G_m u_game + T_m u_team + s_m * v_team,m + rain_m * r,
     u_game ~ N(0, I), u_team ~ N(0, I), v ~ N(0, I).
 
 u_game is shared by both teams (pace, officiating, game script), u_team by all
@@ -11,6 +11,8 @@ sacks, interceptions and yardage together), and v is model-specific. The
 loadings are fit by marginal likelihood on games the play models never saw
 (see nflsim.models.game_effects), so the simulator draws effects exactly as
 they were estimated: no outcome-derived inputs and no double-counted noise.
+
+r is the game's forecast rain and rain_m comes from nflsim.models.rain_term. Bundles without it have no rain term.
 """
 
 from __future__ import annotations
@@ -22,6 +24,7 @@ from typing import Dict, Optional
 import numpy as np
 
 FILE_NAME = "game_effects.json"
+RAIN_CAP = 1.0986  # 8 mm on the weather_precipitation scale. Real scoring stops falling about there, and few games go past it.
 
 
 def head_width(head: str, width: int) -> int:
@@ -55,7 +58,9 @@ class GameEffects:
                 "game": np.asarray(entry["game_loadings"], dtype=np.float64).reshape(size, self.game_dims),
                 "team": np.asarray(entry["team_loadings"], dtype=np.float64).reshape(size, self.team_dims),
                 "private": np.asarray(entry["private_scale"], dtype=np.float64).reshape(size),
+                "rain": np.asarray(entry.get("rain", np.zeros(size)), dtype=np.float64).reshape(size),
             }
+        self.has_rain = any("rain" in entry for entry in spec["models"].values())
 
     @classmethod
     def load(cls, directory: Path) -> Optional["GameEffects"]:
@@ -67,12 +72,13 @@ class GameEffects:
     def draw_game(self, rng: np.random.Generator) -> np.ndarray:
         return rng.standard_normal(self.game_dims)
 
-    def team_shifts(self, game_draw: np.ndarray, rng: np.random.Generator) -> Dict[str, np.ndarray]:
+    def team_shifts(self, game_draw: np.ndarray, rng: np.random.Generator, rain: float = 0.0) -> Dict[str, np.ndarray]:
         """Draw one team's effects for a game and return each model's raw-logit shift."""
+        rain = min(float(rain), RAIN_CAP)
         team_draw = rng.standard_normal(self.team_dims)
         shifts = {}
         for model, entry in self.models.items():
             private = rng.standard_normal(entry["private"].shape[0])
-            shift = entry["bias"] + entry["game"] @ game_draw + entry["team"] @ team_draw + entry["private"] * private
+            shift = entry["bias"] + entry["game"] @ game_draw + entry["team"] @ team_draw + entry["private"] * private + entry["rain"] * rain
             shifts[model] = expand_shift(entry["head"], entry["width"], shift)
         return shifts

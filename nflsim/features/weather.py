@@ -11,6 +11,7 @@ WEATHER_COLUMNS = (
     "weather_temp_delta",
     "weather_wind_speed",
     "weather_missing",
+    "weather_precipitation",
 )
 OUTDOOR_ROOFS = {"open", "outdoor", "outdoors"}
 INDOOR_ROOFS = {"closed", "dome", "indoor", "indoors"}
@@ -36,11 +37,14 @@ def weather_frame(games: pd.DataFrame) -> pd.DataFrame:
     indoor = roof.isin(INDOOR_ROOFS)
     temperature = pd.to_numeric(games.get("temp", pd.Series(np.nan, index=games.index)), errors="coerce")
     wind = pd.to_numeric(games.get("wind", pd.Series(np.nan, index=games.index)), errors="coerce")
-    complete = np.isfinite(temperature) & np.isfinite(wind)
+    # Forecast rain and melted snow during the game, in millimeters. Extra water matters less once a game is already wet.
+    precipitation = pd.to_numeric(games.get("precipitation", pd.Series(0.0, index=games.index)), errors="coerce")
+    complete = np.isfinite(temperature) & np.isfinite(wind) & np.isfinite(precipitation)
     valid = outdoor & complete
     return pd.DataFrame({
         "weather_outdoor": outdoor.astype(float),
         "weather_temp_delta": (((temperature - 60.0) / 20.0).clip(-2.0, 2.0)).where(valid, 0.0),
         "weather_wind_speed": (wind / 15.0).clip(0.0, 2.0).where(valid, 0.0),
         "weather_missing": ((~(outdoor | indoor)) | (outdoor & ~complete)).astype(float),
+        "weather_precipitation": (np.log1p(precipitation.clip(lower=0.0)) / 2.0).clip(0.0, 1.5).where(valid, 0.0),
     }, index=games.index, columns=WEATHER_COLUMNS)

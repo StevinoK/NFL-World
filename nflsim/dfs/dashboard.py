@@ -33,10 +33,17 @@ from nflsim.dfs.optimizer import (
     load_prices,
     load_simulations,
     merge_prices_and_sims,
+    omega_ratio,
+    portfolio_results,
     run_field_simulation,
     scale_simulations,
+    select_candidate_pool,
+    slate_from_simulations,
+    split_simulations,
     summarize_player_projections,
 )
+from nflsim.dfs.contest import Contest, draft_contests, draw_field, field_players, lineup_scores, portfolio_cash
+from nflsim.dfs.field_model import FieldModel
 from nflsim.dfs.public_projections import (
     blend_projections,
     fetch_dailyfantasyfuel_projections,
@@ -52,6 +59,8 @@ except ImportError:
     get_script_run_ctx = None
 
 DEFAULT_SEASON = 2026
+FIELD_MODEL = Path(__file__).with_name("field_model.json")
+FITTED, AGENTS = "Fitted to real contests", "Self-play agents"
 
 
 @st.cache_data(show_spinner="Fetching Sleeper projections...", ttl=300)
@@ -110,7 +119,7 @@ def distribution_chart(values: pd.Series, mean_value: float, source_points: dict
     hist = pd.DataFrame({"points": (edges[:-1] + edges[1:]) / 2.0, "count": counts})
     layers = [
         alt.Chart(hist)
-        .mark_bar(color="#9ec5f4", cornerRadiusTopLeft=2, cornerRadiusTopRight=2)
+        .mark_bar(color=ui.TINT, cornerRadiusTopLeft=2, cornerRadiusTopRight=2)
         .encode(x=alt.X("points:Q", title=None), y=alt.Y("count:Q", title=None))
     ]
     rules = [("scaled mean", mean_value, ui.INK)]
@@ -161,8 +170,12 @@ def main() -> None:
               eyebrow="DFS")
     ui.section("Slate", st.sidebar)
 
-    season = st.sidebar.number_input("Season", min_value=2016, max_value=2100, value=DEFAULT_SEASON, step=1, help='Season of the slate.')
-    week = st.sidebar.number_input("Week", min_value=1, max_value=22, value=1, step=1, help='Week of the slate.')
+    season = st.sidebar.number_input("Season", min_value=2016, max_value=2100, value=DEFAULT_SEASON, step=1,
+                                     help="Season of the slate, for public projections. A simulations file from our runs sets "
+                                          "this itself.")
+    week = st.sidebar.number_input("Week", min_value=1, max_value=22, value=1, step=1,
+                                   help="Week of the slate, for public projections. A simulations file from our runs sets "
+                                        "this itself.")
 
     ui.section("Inputs", st.sidebar)
     # file_uploader's "Browse files" button opens the OS's native file explorer dialog.
@@ -177,11 +190,26 @@ def main() -> None:
         price_floor = st.number_input("Min player salary to include", value=600, step=50, help='Leave out players cheaper than this.')
         optimization_objective = st.selectbox(
             "Lineup objective",
-            ["Omega ratio", "Winner odds"],
-            help="Omega uses the DK payout table and field size; Winner odds maximizes the chance one entry beats the field.",
+            ["Omega ratio", "Expected profit", "Winner odds"],
+            help="How entries are added, one at a time. Omega ratio: the pick that most raises the whole portfolio's "
+                 "gains over losses across simulations. Expected profit: the pick that most raises average profit. Winner "
+                 "odds (self-play field only): the chance one entry beats the field.",
+        )
+        holdout = st.checkbox(
+            "Check picks on held-out simulations", value=True,
+            help="Draft on half the simulations and judge the lineups on the other half. Lineups picked and scored on "
+                 "the same simulations look better than they are; the gap shows by how much.",
         )
 
     with st.sidebar.expander("Field-model settings"):
+        field_choice = st.radio(
+            "Field", [FITTED, AGENTS] if FIELD_MODEL.is_file() else [AGENTS], horizontal=True,
+            help="Fitted: opponents' lineups drawn from a model fitted to real Showdown fields, duplicates and all, and "
+                 "ties split prizes. Self-play: the older agent model, which never duplicates a lineup.")
+        favorite_team = st.text_input("Favored team (fitted field)", value="",
+                                      help="Team abbreviation the betting line favors. Leave blank to use the team with "
+                                           "the higher total projection.")
+        field_seed = st.number_input("Field seed", value=0, step=1, help="Seed for drawing the fitted field.")
         num_agents = st.number_input("Field agents", value=500, min_value=10, step=50, help='Simulated opponents building lineups, used to estimate how the field will play.')
         team_size = st.number_input("Lineups per agent", value=5, min_value=1, step=1, help='Lineups each simulated opponent builds.')
         iterations = st.number_input("Improvement iterations", value=3, min_value=1, step=1, help='Rounds of improving each lineup. More can find better lineups but takes longer.')
@@ -232,16 +260,21 @@ def main() -> None:
     contest_ids = sorted(export_df["Contest ID"].dropna().unique())
     contest_detail = None
     contest_payouts = None
+    contest_info = {}  # Contest ID: (detail, payouts)
     with st.sidebar.expander("DraftKings contest", expanded=True):
         st.write(f"Our entries: {len(export_df)}")
-        if len(contest_ids) != 1:
-            st.warning(f"Found {len(contest_ids)} contest IDs in the entries file.")
+        if len(contest_ids) > 1:
+            st.info(f"{len(contest_ids)} contests in the entries file. The fitted field drafts them together; the "
+                    "self-play field needs a single contest.")
+        elif not contest_ids:
+            st.warning("No contest IDs in the entries file.")
         for contest_id in contest_ids:
             try:
                 contest, payouts = cached_draftkings_contest(contest_id)
             except Exception as error:
                 st.warning(f"Could not fetch contest {contest_id}: {error}")
                 continue
+            contest_info[contest_id] = (contest, payouts)
             if len(contest_ids) == 1:
                 contest_detail = contest
                 contest_payouts = payouts
@@ -269,6 +302,12 @@ def main() -> None:
         prices = apply_kicker_selection(prices, kicker_choices)
 
     if st.button("Load projections", help='Download public projections to compare with the simulations.'):
+        slate = slate_from_simulations(sim_file)
+        if slate is not None:
+            if slate != (int(season), int(week)):
+                st.info(f"Public projections for {slate[0]} week {slate[1]}, the week in the simulations file "
+                        f"(the sidebar says {int(season)} week {int(week)}).")
+            season, week = slate
         try:
             simulations_raw = load_simulations(sim_file)
         except (OSError, pd.errors.ParserError) as error:
@@ -363,7 +402,7 @@ def main() -> None:
     if last_scale:
         st.caption(
             f"Scaled {last_scale[1]} of {last_scale[2]} players to {last_scale[0]} projections "
-            f"at {last_scale[3]:.0%} source weight."
+            f"at {last_scale[3]:.1%} source weight."
         )
 
     global_scale = st.slider("Global scale (all players)", 0.50, 1.50, 1.00, 0.01, help="Multiply every player's simulated points by this amount.")
@@ -444,55 +483,163 @@ def main() -> None:
     player_map = build_player_map(merged_prices)
     lineup_sims_df, lu_scores_array = compute_lineup_score_distributions(lineups_df, simulations, player_map)
 
-    field_simulations = build_field_simulations(covs, field_mean, len(simulations))
-    _, market_scores_array = compute_lineup_score_distributions(lineups_df, field_simulations, player_map)
+    pick_columns, judge_columns = split_simulations(lu_scores_array.shape[1]) if holdout else (None, None)
+    use_fitted = field_choice == FITTED
+    if use_fitted:
+        missing = [str(cid) for cid in contest_ids if cid not in contest_info or contest_info[cid][1].empty]
+        if not contest_ids or missing:
+            st.error("The fitted field needs each contest's payout table from DraftKings. Missing: "
+                     + (", ".join(missing) or "no contest IDs in the entries file") + ".")
+            return
+        team_totals = merged_prices[merged_prices["Roster Position"].ne("CPT")].assign(
+            projection=lambda frame: frame.short_name.map(field_mean)).groupby("TeamAbbrev").projection.sum()
+        favored = favorite_team.strip().upper() or str(team_totals.idxmax())
+        fitted_objective = "cash" if optimization_objective == "Expected profit" else "omega"
+        if optimization_objective == "Winner odds":
+            st.info("Winner odds is for the self-play field; drafting by Omega ratio against the fitted field.")
+        model, field_input = FieldModel.load(FIELD_MODEL), field_players(merged_prices, field_mean, favored)
+        entry_rows = {cid: np.flatnonzero(export_df["Contest ID"].eq(cid).to_numpy()) for cid in contest_ids}
+        contests, fields = [], []
+        for number, cid in enumerate(contest_ids):
+            detail, payouts = contest_info[cid]
+            label = detail["name"] or f"Contest {cid}"
+            size = int(detail["maximum_entries"]) - len(entry_rows[cid])
+            if size <= 0:
+                st.error(f"{label}: our {len(entry_rows[cid])} entries fill the whole contest; there is no field to draw.")
+                return
+            with st.status(f"{label}: drawing a field of {size:,} entries ({favored} favored)...") as status:
+                field = draw_field(model, field_input, size, np.random.default_rng(int(field_seed) + number))
+                field_scores = lineup_scores(field.lineups, simulations)
+                status.update(label=f"{label}: {len(field.lineups):,} distinct lineups for {field.entries:,} entries",
+                              state="complete")
+            fields.append(field)
+            contests.append(Contest(field_scores, field.counts, payouts, float(detail["entry_fee"]), len(entry_rows[cid]), label))
+        pool = select_candidate_pool(lu_scores_array, int(pool_size))
+        columns = pick_columns if holdout else np.arange(lu_scores_array.shape[1])
+        picking = [Contest(contest.field_scores[:, columns], contest.field_counts, contest.payouts, contest.entry_fee,
+                           contest.entries, contest.name) for contest in contests]
+        with st.spinner(f"Drafting {len(export_df)} entries across {len(contests)} contest(s)..."):
+            chosen, _ = draft_contests(lu_scores_array[pool][:, columns], picking, objective=fitted_objective)
+        lineup_indices = np.empty(len(export_df), dtype=np.int64)
+        contest_labels = np.empty(len(export_df), dtype=object)
+        for cid, contest, picks in zip(contest_ids, contests, chosen):
+            lineup_indices[entry_rows[cid]] = pool[picks]
+            contest_labels[entry_rows[cid]] = contest.name
+        filled_export, drafted_lineups_df, our_counts = draft_our_entries(
+            export_df, lu_scores_array, [], lineup_sims_df, player_map, lineup_indices=lineup_indices.tolist())
+        drafted_lineups_df.insert(0, "Contest", contest_labels)
+        name_by_key = {(row.short_name, row["Roster Position"] == "CPT"): row["Name + ID"] for _, row in merged_prices.iterrows()}
+        held = {}
+        for field in fields:
+            for lineup, count in zip(field.lineups, field.counts):
+                for slot, player in enumerate(lineup):
+                    key = name_by_key.get((player, slot == 0))
+                    held[key] = held.get(key, 0) + int(count)
+        counts = pd.Series(held, dtype=float) / sum(field.entries for field in fields)
+        objective_key = fitted_objective
+    else:
+        field_simulations = build_field_simulations(covs, field_mean, len(simulations))
+        _, market_scores_array = compute_lineup_score_distributions(lineups_df, field_simulations, player_map)
 
-    progress = st.progress(0.0, text="Simulating the field...")
+        progress = st.progress(0.0, text="Simulating the field...")
 
-    def on_progress(done: int, total: int, drift: float) -> None:
-        progress.progress(done / total, text=f"Field iteration {done}/{total} (ownership drift {drift:.4f})")
+        def on_progress(done: int, total: int, drift: float) -> None:
+            progress.progress(done / total, text=f"Field iteration {done}/{total} (ownership drift {drift:.4f})")
 
-    _, counts, field_indices = run_field_simulation(
-        lu_scores_array,
-        market_scores_array,
-        lineup_sims_df,
-        num_agents=int(num_agents),
-        team_size=int(team_size),
-        iterations=int(iterations),
-        subsample=float(subsample),
-        pool_size=int(pool_size),
-        progress_callback=on_progress,
-    )
+        _, counts, field_indices = run_field_simulation(
+            lu_scores_array,
+            market_scores_array,
+            lineup_sims_df,
+            num_agents=int(num_agents),
+            team_size=int(team_size),
+            iterations=int(iterations),
+            subsample=float(subsample),
+            pool_size=int(pool_size),
+            progress_callback=on_progress,
+        )
 
-    objective_key = "winner"
-    if optimization_objective == "Omega ratio":
-        if contest_detail is not None and contest_payouts is not None and not contest_payouts.empty:
-            objective_key = "omega"
-        else:
-            st.warning("Omega ratio objective needs one fetched DK contest payout table; falling back to Winner odds.")
+        objective_key = "winner"
+        if optimization_objective == "Expected profit":
+            st.info("Expected profit is for the fitted field; the self-play field drafts by Omega ratio or Winner odds.")
+        if optimization_objective != "Winner odds":
+            if contest_detail is not None and contest_payouts is not None and not contest_payouts.empty:
+                objective_key = "omega"
+            else:
+                st.warning("Omega ratio objective needs one fetched DK contest payout table; falling back to Winner odds.")
 
-    filled_export, drafted_lineups_df, our_counts = draft_our_entries(
-        export_df,
-        lu_scores_array,
-        field_indices,
-        lineup_sims_df,
-        player_map,
-        payout_tiers=contest_payouts,
-        entry_fee=contest_detail["entry_fee"] if contest_detail is not None else None,
-        field_size=contest_detail["maximum_entries"] if contest_detail is not None else None,
-        objective=objective_key,
-        omega_pool_size=int(pool_size),
-    )
+        pick_columns, judge_columns = split_simulations(lu_scores_array.shape[1]) if holdout else (None, None)
+        filled_export, drafted_lineups_df, our_counts = draft_our_entries(
+            export_df,
+            lu_scores_array,
+            field_indices,
+            lineup_sims_df,
+            player_map,
+            payout_tiers=contest_payouts,
+            entry_fee=contest_detail["entry_fee"] if contest_detail is not None else None,
+            field_size=contest_detail["maximum_entries"] if contest_detail is not None else None,
+            objective=objective_key,
+            omega_pool_size=int(pool_size),
+            pick_columns=pick_columns,
+        )
 
     ui.section("Results")
     tiles = st.columns(3)
     tiles[0].metric("Valid lineups", f"{len(lineups_df):,}")
     tiles[1].metric("Entries drafted", f"{len(drafted_lineups_df):,}")
-    tiles[2].metric("Draft objective", "Omega ratio" if objective_key == "omega" else "Winner odds")
+    tiles[2].metric("Draft objective", {"omega": "Omega ratio", "cash": "Expected profit"}.get(objective_key, "Winner odds"))
 
     ownership = pd.concat([counts.rename("field_ownership"), our_counts.rename("our_ownership")], axis=1).fillna(0)
     ownership["diff"] = ownership["our_ownership"] - ownership["field_ownership"]
-    st.dataframe(ownership.sort_values("our_ownership", ascending=False), width="stretch")
+    st.dataframe(
+        ui.styled_frame(
+            ownership.sort_values("our_ownership", ascending=False),
+            {"field_ownership": ui.percent, "our_ownership": ui.percent, "diff": ui.signed_percent},
+            {"diff": (0.0, 0.2)},
+        ),
+        width="stretch",
+    )
+
+    if holdout and use_fitted:
+        drafted = drafted_lineups_df.lineup_index.to_numpy()
+        rows = []
+        for label, columns in (("Picked on", pick_columns), ("Held out", judge_columns)):
+            total = np.zeros(len(columns))
+            for cid, contest in zip(contest_ids, contests):
+                ours = lu_scores_array[drafted[entry_rows[cid]]][:, columns]
+                returns = (portfolio_cash(ours, contest.field_scores[:, columns], contest.field_counts, contest.cash_table()).sum(axis=0)
+                           - contest.entry_fee * contest.entries)
+                total += returns
+                if len(contests) > 1:
+                    rows.append({"contest": contest.name, "simulations": label, "expected_profit": returns.mean(),
+                                 "chance_of_profit": (returns > 0).mean(), "omega": omega_ratio(returns)})
+            rows.append({"contest": "All contests", "simulations": label, "expected_profit": total.mean(),
+                         "chance_of_profit": (total > 0).mean(), "omega": omega_ratio(total)})
+        checks = pd.DataFrame(rows)
+        checks = checks.iloc[np.lexsort((checks.simulations.ne("Picked on"), checks.contest.eq("All contests")))]
+        ui.section("Held-out check")
+        st.dataframe(ui.styled_frame(checks, {"expected_profit": "{:+,.2f}", "chance_of_profit": ui.percent, "omega": "{:.3f}"}),
+                     hide_index=True, width="stretch", column_config={"contest": "Contest", "simulations": "Simulations",
+                                                                      "expected_profit": "Expected profit",
+                                                                      "chance_of_profit": "Chance of profit", "omega": "Omega ratio"})
+        st.caption("Profit for our entries against each contest's drawn field, with ties splitting prizes, and for all "
+                   "contests together on the same simulations. The held-out rows are the honest estimate.")
+    elif holdout:
+        payout_options = dict(payout_tiers=contest_payouts, entry_fee=contest_detail["entry_fee"] if contest_detail is not None else None,
+                              field_size=contest_detail["maximum_entries"] if contest_detail is not None else None)
+        checks = pd.DataFrame([
+            {"simulations": "Picked on", **portfolio_results(lu_scores_array[:, pick_columns], drafted_lineups_df.lineup_index,
+                                                            field_indices, **payout_options)},
+            {"simulations": "Held out", **portfolio_results(lu_scores_array[:, judge_columns], drafted_lineups_df.lineup_index,
+                                                           field_indices, **payout_options)},
+        ])
+        ui.section("Held-out check")
+        formats = {"mean_score": ui.number, "win_share": ui.percent, "expected_profit": "{:+,.2f}", "omega": "{:.3f}"}
+        st.dataframe(ui.styled_frame(checks, {key: value for key, value in formats.items() if key in checks}), hide_index=True,
+                     width="stretch", column_config={"simulations": "Simulations", "mean_score": "Mean lineup score",
+                                                     "win_share": "Beats the field", "expected_profit": "Expected profit",
+                                                     "omega": "Omega ratio"})
+        st.caption("The held-out row is the honest estimate. A large drop from the picked row means the drafted "
+                   "lineups were fitted to luck in the picking simulations; more simulations per game shrink it.")
 
     ui.section("Drafted lineups")
     st.dataframe(drafted_lineups_df, width="stretch")
@@ -511,8 +658,17 @@ def main() -> None:
         },
     )
     st.dataframe(final_projections, width="stretch")
-    st.bar_chart(final_projections[["sim_p10", "sim_mean", "sim_p90"]].head(30), stack=False,
-                 color=[ui.SERIES[0], ui.SERIES[1], ui.SERIES[2]])
+    import plotly.graph_objects as go
+
+    top = final_projections[["sim_p10", "sim_mean", "sim_p90"]].head(30)
+    chart = go.Figure([go.Bar(x=top.index.astype(str), y=top[column], name=label, marker_color=color)
+                       for column, label, color in (("sim_p10", "10th percentile", ui.SERIES[0]),
+                                                    ("sim_mean", "Mean", ui.SERIES[1]),
+                                                    ("sim_p90", "90th percentile", ui.SERIES[2]))])
+    chart.update_layout(barmode="group", yaxis_title="DraftKings points", height=420, margin={"t": 30},
+                        legend={"orientation": "h", "y": 1.08})
+    st.plotly_chart(ui.style_plotly(chart), use_container_width=True, theme=None)
+    ui.image_actions(chart, "player projections")
 
     csv_bytes = filled_export.to_csv(index=False).encode("utf-8")
     st.download_button("Download entries CSV", data=csv_bytes, file_name="Entry.csv", mime="text/csv", help='Save the finished lineups in the format DraftKings accepts.')

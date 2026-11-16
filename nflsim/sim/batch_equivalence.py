@@ -25,11 +25,11 @@ from scipy import stats
 from nflsim.features.game_inputs import build_real_game
 from nflsim.paths import ROOT
 from nflsim.sim.execution import execute_ridge_games
-from nflsim.sim.synthetic_games import _load_inputs, build_synthetic_game, synthetic_game_row
+from nflsim.sim.synthetic_games import _load_inputs, league_game, prepare_league_team
 
-# Outdoor, dome and neutral-site games, plus a synthetic game whose home and away teams swap halfway.
+# Outdoor, dome and neutral-site games, plus a league pairing whose home and away teams swap halfway.
 TEST_GAMES = ("2026_09_JAX_BAL", "2026_09_LV_SF", "2026_09_CLE_NO", "2026_09_BUF_MIN", "2026_09_CIN_ATL", "2026_10_NE_DET")
-SYNTHETIC = ("KC", 9)
+LEAGUE_PAIR = ("KC", "DET", 9)
 TEAM_STATS = ("passing_yards", "rushing_yards", "receiving_yards", "receptions", "pass_attempts", "completions",
               "rushing_attempts", "interceptions", "sacks", "fumble_lost", "passing_touchdowns", "rushing_touchdowns")
 
@@ -41,9 +41,10 @@ def test_games(runtime, artifact_dir: Path, season: int, simulations: int):
         row = schedule[schedule.game_id.eq(game_id)].iloc[0]
         games.append(build_real_game(runtime, runtime.player_stats_wide, runtime.team_stats_wide, roster, depth,
                                      schedule, row, simulations))
-    team, week = SYNTHETIC
-    games.append(build_synthetic_game(runtime, runtime.player_stats_wide, runtime.team_stats_wide, roster, depth,
-                                      schedule, team, synthetic_game_row(schedule, team, week), simulations))
+    first, second, week = LEAGUE_PAIR
+    pair = [prepare_league_team(runtime, runtime.player_stats_wide, runtime.team_stats_wide, roster, depth, schedule, team, week)
+            for team in (first, second)]
+    games.append(league_game(*pair, week, simulations))
     return games
 
 

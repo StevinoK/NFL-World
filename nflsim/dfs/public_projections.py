@@ -56,7 +56,7 @@ _BROWSER_HEADERS = {
 
 
 def _short_name(first: str, last: str, position: str, team: str) -> Optional[str]:
-    """Match `dfs_optimizer`'s short_name convention (TEAM.Kicker/TEAM.Defense or F.Last)."""
+    """Match `optimizer.name_keys` (TEAM.Kicker/TEAM.Defense or Fir.Last, periods dropped from the first name)."""
     if not team:
         return None
     if position in ("K", "DST"):
@@ -67,7 +67,7 @@ def _short_name(first: str, last: str, position: str, team: str) -> Optional[str
     if not first or not last:
         return None
     # DK's key is Name.split()[1], so a multi-token surname ("St. Brown") keys off "St.".
-    return f"{first[:3]}.{last.split()[0]}"
+    return f"{first.split()[0].replace('.', '')[:3]}.{last.split()[0]}"
 
 
 def fetch_sleeper_projections(season: int, week: int) -> pd.Series:

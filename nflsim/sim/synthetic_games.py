@@ -1,23 +1,42 @@
+"""Rate teams by simulating each against the whole league, itself included, at a neutral site.
+
+An averaged opponent plays like no real team, so ratings come from real lineups.
+"""
+
 from __future__ import annotations
 
 import argparse
 import json
+from dataclasses import dataclass
 from datetime import datetime
+from itertools import combinations_with_replacement
 from pathlib import Path
 
-import numpy as np
 import pandas as pd
 
-from nflsim.sim.execution import execute_ridge_games
+from nflsim.engine.chunk_execution import serialize_players
+from nflsim.sim.execution import RidgePreparedGame, execute_ridge_games
 from nflsim.features.game_inputs import (
-    actual_roof, make_players, rest_before, roster_for_team_week, slot_assignments,
+    make_players_from_assignments, pregame_team_snapshot, rest_before, roster_for_team_week, slot_assignments,
 )
 from nflsim.features.builder import canonicalize_teams
-from nflsim.paths import ROOT, digest, output_dir, write_json
-from nflsim.sim.runtime import RidgeRuntime, with_opponent_context
-from nflsim.semantics import context_available_column
+from nflsim.features.lineup_value import OPPONENT_ALIASES, apply_lineup_value, dl_assignments, lineup_values, player_value_tables
+from nflsim.paths import ROOT, output_dir, write_json
+from nflsim.sim.runtime import RidgeRuntime
+from nflsim.features.forecast_archive import pregame_weather
 from nflsim.features.weather import weather_features
-from nflsim.engine.simulation_runtime import Player, SKILL_SLOT_ORDER
+
+# Every pairing is played in the same mild outdoor conditions, so a rating doesn't move with one week's weather.
+NEUTRAL_WEATHER = {"roof": "outdoors", "temp": 60.0, "wind": 7.0, "precipitation": 0.0}
+DEFAULT_SIMULATIONS = 64
+
+
+@dataclass(frozen=True)
+class LeagueTeam:
+    name: str
+    season: int
+    features: dict
+    players: list
 
 
 def synthetic_team_options(schedule: pd.DataFrame) -> list[str]:
@@ -36,129 +55,91 @@ def synthetic_game_row(schedule: pd.DataFrame, team: str, week: int) -> pd.Serie
     first_date = pd.to_datetime(weekly.gameday, errors="raise").min().normalize()
     sunday = first_date + pd.Timedelta(days=(6 - first_date.weekday()) % 7)
     return pd.Series({"season": int(weekly.season.iloc[0]), "week": int(week),
-                      "gameday": sunday, "home_team": team, "away_team": "SYN",
+                      "gameday": sunday, "home_team": team, "away_team": "BYE",
                       "roof": "outdoors", "location": "Neutral"})
 
 
-def build_synthetic_game(runtime: RidgeRuntime, player_stats: pd.DataFrame, team_stats: pd.DataFrame,
-                         roster: pd.DataFrame, depth: pd.DataFrame, schedule: pd.DataFrame,
-                         home_team: str, game_row: pd.Series, simulations: int,
-                         use_model_rank: bool = True, assignments=None, player_overrides=None,
-                         dl=None, pv_override=None):
-    from nflsim.sim.execution import prepared_game
-
-    schedule = schedule.copy()
+def prepare_league_team(runtime: RidgeRuntime, player_stats: pd.DataFrame, team_stats: pd.DataFrame,
+                        roster: pd.DataFrame, depth: pd.DataFrame, schedule: pd.DataFrame, team: str, week: int,
+                        use_model_rank: bool = True, assignments=None, player_overrides=None, dl=None,
+                        pv_override=None) -> LeagueTeam:
+    """A team's inputs and lineup for the week, ready to meet any opponent at a neutral site."""
+    game_row = synthetic_game_row(schedule, team, week)
     kickoff = pd.Timestamp(game_row.gameday)
-    home_team = str(home_team)
-    cutoff_team = team_stats.copy()
-    cutoff_team["game_date"] = pd.to_datetime(cutoff_team.game_date, errors="coerce")
-    history = cutoff_team[cutoff_team.game_date.le(kickoff)]
-    home_history = history[history.team.astype(str).eq(home_team)]
-    if home_history.empty:
-        raise ValueError(f"No pregame Ridge team history for {home_team}")
-    home_row = home_history.sort_values(["game_date", "game_id"]).iloc[-1].reindex(runtime.required_team_feature_columns).copy()
-
-    week_schedule = schedule[schedule.week.astype(int).eq(int(game_row.week))].copy()
-    if "season" in week_schedule and "season" in game_row.index:
-        week_schedule = week_schedule[week_schedule.season.astype(int).eq(int(game_row.season))]
-    week_game_ids = set(week_schedule.game_id.astype(str))
-    week_teams = set(week_schedule.home_team.dropna().astype(str)) | set(week_schedule.away_team.dropna().astype(str))
-    current_team_rows = cutoff_team[
-        cutoff_team.game_id.astype(str).isin(week_game_ids)
-        & cutoff_team.team.astype(str).isin(week_teams)
-    ].sort_values(["game_date", "game_id"]).drop_duplicates("team", keep="last")
-    represented_teams = set(current_team_rows.team.astype(str))
-    bye_teams = set(synthetic_team_options(schedule)) - represented_teams
-    if bye_teams:
-        prior_team = cutoff_team[
-            pd.to_datetime(cutoff_team.game_date, errors="coerce").lt(kickoff)
-            & cutoff_team.team.astype(str).isin(bye_teams)
-        ].sort_values(["game_date", "game_id"]).drop_duplicates("team", keep="last")
-        current_team_rows = pd.concat([current_team_rows, prior_team], ignore_index=True)
-    if current_team_rows.empty:
-        raise ValueError(f"No league team inputs available for the synthetic opponent in week {game_row.week}")
-    synthetic_team = current_team_rows.reindex(columns=runtime.required_team_feature_columns).mean(numeric_only=True).fillna(0.0)
-    weather = weather_features(game_row)
-    for column, value in weather.items():
-        home_row[column] = value
-        synthetic_team[column] = value
+    season = int(game_row.season)
+    row = pregame_team_snapshot(runtime, team_stats, team, kickoff).copy()
+    row["days_rest"] = rest_before(schedule, team, kickoff)
+    row["opp_days_rest"] = 7.0
     for column in runtime.required_team_feature_columns:
         if column.endswith("_venue_effect"):
-            synthetic_team[column] = 0.0
-            home_row[column] = 0.0
-    home_row["days_rest"] = rest_before(schedule, home_team, kickoff)
-    home_row["opp_days_rest"] = 7.0
-    mapping = getattr(runtime, "opponent_context", {})
-    if mapping:
-        # The synthetic opponent is an unseen defense entity: zero shrunk coefficient.
-        for source in set(mapping.values()):
-            synthetic_team[source] = 0.0
-            synthetic_team[context_available_column(source)] = 0.0
-        home_row = with_opponent_context(mapping, home_row, synthetic_team)
-        synthetic_team = with_opponent_context(mapping, synthetic_team, home_row)
-    for model in runtime.context_map:
-        runtime.checked_context(model, home_row)
-        runtime.checked_context(model, synthetic_team)
-    team_features = pd.DataFrame([home_row, synthetic_team], index=[home_team, "SYN"]).reindex(columns=runtime.required_team_feature_columns)
-
-    slots = assignments or slot_assignments(roster, depth, home_team, int(game_row.week), kickoff, player_stats, use_model_rank=use_model_rank)
-    from nflsim.features.game_inputs import make_players_from_assignments
-    home_players = make_players_from_assignments(runtime, player_stats, slots, kickoff, player_overrides)
-    from nflsim.features.game_inputs import roster_for_team_week
-    from nflsim.features.lineup_value import apply_lineup_value, dl_assignments, lineup_values, player_value_tables
-    from nflsim.features.player_value import PV_COLUMNS
+            row[column] = 0.0
+    for column, value in weather_features(NEUTRAL_WEATHER).items():
+        if column in row.index:
+            row[column] = value
+    slots = assignments or slot_assignments(roster, depth, team, int(week), kickoff, player_stats, use_model_rank=use_model_rank)
+    players = make_players_from_assignments(runtime, player_stats, slots, kickoff, player_overrides)
     tables = player_value_tables(runtime)
     if tables is not None:
-        season = int(game_row.season) if "season" in game_row.index else int(str(game_row.game_id)[:4])
         if dl is None:
-            dl = dl_assignments(roster, depth, home_team, int(game_row.week), kickoff, tables, roster_for_team_week)
-        home_values, _ = lineup_values(tables, slots, dl, season, int(game_row.week), kickoff)
-        home_values.update(pv_override or {})
-        synthetic_values = {column: float(team_features.loc["SYN", column]) for column in PV_COLUMNS}
-        team_features = apply_lineup_value(tables, team_features, {home_team: home_players},
-                                           {home_team: home_values, "SYN": synthetic_values}, season, int(game_row.week),
-                                           update_aliases=False)
+            dl = dl_assignments(roster, depth, team, int(week), kickoff, tables, roster_for_team_week)
+        values, _ = lineup_values(tables, slots, dl, season, int(week), kickoff)
+        values.update(pv_override or {})
+        frame = apply_lineup_value(tables, pd.DataFrame([row], index=[team]), {team: players}, {team: values}, season, int(week),
+                                   update_aliases=False)
+        row = frame.loc[team]
+    for model in runtime.context_map:
+        runtime.checked_context(model, row)
+    return LeagueTeam(team, season, row.to_dict(), serialize_players(players))
 
-    player_columns = list(runtime.required_player_feature_columns)
-    opposing_lineups = []
-    for team in current_team_rows.team.astype(str):
-        opponent_row = synthetic_game_row(schedule, team, int(game_row.week))
-        opponent_kickoff = pd.Timestamp(opponent_row.gameday)
+
+def league_game(first: LeagueTeam, second: LeagueTeam, week: int, simulations: int) -> RidgePreparedGame:
+    """A neutral-site pairing. A team against itself gets half the simulations, because both sides count for that team."""
+    features = {first.name: dict(first.features), second.name: dict(second.features)}
+    for team, opponent in ((first, second), (second, first)):
+        for alias, source in OPPONENT_ALIASES.items():
+            if alias in features[team.name]:
+                features[team.name][alias] = opponent.features[source]
+    return RidgePreparedGame(
+        game_id=f"{first.season}_{int(week):02d}_PAIR_{first.name}_{second.name}", week=int(week),
+        home_team=first.name, away_team=second.name, roof=NEUTRAL_WEATHER["roof"],
+        home_players=first.players, away_players=second.players, team_features=features,
+        simulations=max(1, int(simulations) // 2) if first.name == second.name else int(simulations),
+        neutral_site=True, swap_home_away_halfway=True,
+    )
+
+
+def league_pairs(teams, selected=None) -> list[tuple[str, str]]:
+    """Every pairing with a selected team in it, including each selected team against itself, so all face the same field."""
+    chosen = set(teams if selected is None else selected)
+    return [(first, second) for first, second in combinations_with_replacement(sorted(teams), 2)
+            if (first in chosen or second in chosen) and (first != second or first in chosen)]
+
+
+def build_league_games(runtime: RidgeRuntime, player_stats: pd.DataFrame, team_stats: pd.DataFrame, roster: pd.DataFrame,
+                       depth: pd.DataFrame, schedule: pd.DataFrame, week: int, simulations: int, selected=None,
+                       use_model_rank: bool = True, custom=None):
+    """Returns the pairings and any teams that couldn't be prepared. custom holds a team's prepare_league_team lineup changes."""
+    teams, failures = {}, []
+    for team in synthetic_team_options(schedule):
         try:
-            opponent_slots = slot_assignments(
-                roster, depth, team, int(game_row.week), opponent_kickoff, player_stats,
-                use_model_rank=use_model_rank,
-            )
-            opposing_lineups.extend(make_players(runtime, player_stats, opponent_slots, opponent_kickoff))
-        except ValueError:
-            continue
-    if opposing_lineups:
-        current_players = pd.DataFrame([
-            {"position": player.position[:-1], **player.attributes.iloc[0].reindex(player_columns).to_dict()}
-            for player in opposing_lineups
-        ])
-        current_players[player_columns] = current_players[player_columns].apply(pd.to_numeric, errors="coerce")
-        position_means = current_players.groupby("position")[player_columns].mean()
-        league_player_mean = current_players[player_columns].mean().fillna(0.0)
-    else:
-        before = player_stats.copy()
-        before["game_date"] = pd.to_datetime(before.game_date, errors="coerce")
-        before = before[before.game_date.lt(kickoff)]
-        before = before.sort_values(["player_id", "game_date", "game_id"]).drop_duplicates("player_id", keep="last")
-        values = before.reindex(columns=player_columns).apply(pd.to_numeric, errors="coerce").mean().fillna(0.0)
-        position_means = pd.DataFrame([values], index=["OTHER"])
-        league_player_mean = values
-    synthetic_players = []
-    for slot in SKILL_SLOT_ORDER:
-        position = slot[:-1]
-        means = position_means.loc[position] if position in position_means.index else league_player_mean
-        values = means.reindex(player_columns).fillna(0.0).to_dict()
-        synthetic_players.append(Player(f"Synthetic {slot}", slot, f"SYN_{slot}", pd.DataFrame([values])))
-    synthetic_game = pd.Series({"game_id": f"{game_row.season}_{int(game_row.week):02d}_SYN_{home_team}",
-                                "week": int(game_row.week), "home_team": home_team, "away_team": "SYN",
-                                "gameday": kickoff, "location": "Neutral"})
-    return prepared_game(synthetic_game, team_features, home_players, synthetic_players,
-                         simulations, actual_roof(game_row), swap_home_away_halfway=True)
+            teams[team] = prepare_league_team(runtime, player_stats, team_stats, roster, depth, schedule, team, week,
+                                              use_model_rank, **(custom or {}).get(team, {}))
+        except (ValueError, KeyError) as error:
+            failures.append({"team": team, "error": str(error)})
+    games = [league_game(teams[first], teams[second], week, simulations) for first, second in league_pairs(teams, selected)]
+    return games, failures
+
+
+def team_games(games: pd.DataFrame) -> pd.DataFrame:
+    """Game rows seen from each team, with that team as home_team, for the teams that faced the whole field.
+
+    A team's own game gives one row per side. Runs from the old averaged opponent read the same way, minus that opponent.
+    """
+    swapped = games.rename(columns={"home_team": "away_team", "away_team": "home_team", "home_score": "away_score", "away_score": "home_score"})
+    rows = pd.concat([games, swapped.assign(spread=-games.spread)], ignore_index=True)
+    rows = rows[rows.home_team.ne("SYN")]
+    opponents = rows.groupby("home_team").away_team.nunique()
+    return rows[rows.home_team.isin(opponents[opponents.eq(opponents.max())].index)].reset_index(drop=True)
 
 
 def snapshot_depth(roster: pd.DataFrame, schedule: pd.DataFrame) -> pd.DataFrame:
@@ -225,18 +206,27 @@ def _load_inputs(season: int, inputs_dir: Path | None = None):
     depth = canonicalize_teams(depth)
     schedule = schedule[(schedule.season.eq(season)) & schedule.game_type.eq("REG") & schedule.week.between(1, 18)].copy()
     schedule["gameday"] = pd.to_datetime(schedule.gameday, errors="coerce")
+    schedule = pregame_weather(schedule)
     roster = roster[roster.season.eq(season)].copy()
     if "dt" in depth:
         depth["dt"] = pd.to_datetime(depth.dt, errors="coerce", utc=True).dt.tz_convert(None)
     return schedule, roster, depth
 
 
+def team_table(games: pd.DataFrame) -> pd.DataFrame:
+    rows = team_games(games)
+    return rows.assign(win=rows.home_score.gt(rows.away_score).astype(float)).groupby("home_team", as_index=False).agg(
+        simulations=("spread", "count"), points_for=("home_score", "mean"), points_against=("away_score", "mean"),
+        margin_mean=("spread", "mean"), margin_median=("spread", "median"), total_median=("total", "median"),
+        win_probability=("win", "mean")).rename(columns={"home_team": "team"}).sort_values("margin_mean", ascending=False)
+
+
 def main():
-    parser = argparse.ArgumentParser(description="Run Ridge-model synthetic-opponent fantasy simulations")
+    parser = argparse.ArgumentParser(description="Simulate every team against the whole league at a neutral site")
     parser.add_argument("--season", type=int, default=datetime.now().year)
     parser.add_argument("--week", type=int, required=True)
-    parser.add_argument("--simulations", type=int, default=200)
-    parser.add_argument("--teams", nargs="+")
+    parser.add_argument("--simulations", type=int, default=DEFAULT_SIMULATIONS, help="Per pairing; each team gets about 32 times this")
+    parser.add_argument("--teams", nargs="+", help="Rate only these teams, still against the whole league")
     parser.add_argument("--backend", choices=("local", "modal"), required=True)
     parser.add_argument("--parallelism", type=int, default=4)
     parser.add_argument("--run-id", default=None)
@@ -244,7 +234,7 @@ def main():
     parser.add_argument("--artifact-dir", type=Path, default=ROOT / "artifacts/runtime")
     parser.add_argument("--depth-chart-order", action="store_true")
     args = parser.parse_args()
-    if not 1 <= args.week <= 18 or args.simulations < 1 or args.parallelism < 1:
+    if not 1 <= args.week <= 18 or args.simulations < 2 or args.parallelism < 1:
         parser.error("week, simulations and parallelism are outside valid ranges")
     from nflsim.bundle import validate_bundle, verify_bundle_hash
     validate_bundle(args.artifact_dir)
@@ -252,46 +242,27 @@ def main():
     runtime = RidgeRuntime(args.artifact_dir, strict_schema=True)
     player_stats, team_stats = runtime.player_stats_wide, runtime.team_stats_wide
     schedule, roster, depth = _load_inputs(args.season, Path(args.artifact_dir) / "weekly_inputs")
-    teams = synthetic_team_options(schedule) if not args.teams else [team.upper() for team in args.teams]
-    run_id = args.run_id or datetime.now().strftime("ridge-synthetic-%Y%m%d-%H%M%S")
-    games = []
-    failures = []
-    for team in teams:
-        try:
-            game_row = synthetic_game_row(schedule, team, args.week)
-            games.append(build_synthetic_game(runtime, player_stats, team_stats, roster, depth,
-                                              schedule, team, game_row, args.simulations,
-                                              use_model_rank=not args.depth_chart_order))
-        except (ValueError, KeyError) as error:
-            failures.append({"team": team, "error": str(error)})
+    selected = [team.upper() for team in args.teams] if args.teams else None
+    run_id = args.run_id or datetime.now().strftime("ridge-league-%Y%m%d-%H%M%S")
+    games, failures = build_league_games(runtime, player_stats, team_stats, roster, depth, schedule, args.week, args.simulations,
+                                         selected, use_model_rank=not args.depth_chart_order)
     if not games:
-        raise RuntimeError(f"No Ridge synthetic games prepared: {failures}")
+        raise RuntimeError(f"No league games prepared: {failures}")
     output = output_dir(ROOT / "outputs/synthetic" / run_id)
     results = execute_ridge_games(games, args.artifact_dir, bundle_hash, backend=args.backend,
                                   parallelism=args.parallelism, run_id=run_id, seed=args.seed)
     output = output_dir(output)
-    game_frames, player_frames = [], []
-    for game in games:
-        game_frame, player_frame = results[game.game_id]
-        stem = game.game_id
-        game_frame.to_csv(output / f"{stem}_games.csv", index=False)
-        player_frame.to_csv(output / f"{stem}_players.csv", index=False)
-        game_frames.append(game_frame)
-        player_frames.append(player_frame)
-    combined_games, combined_players = pd.concat(game_frames, ignore_index=True), pd.concat(player_frames, ignore_index=True)
+    combined_games = pd.concat([results[game.game_id][0] for game in games], ignore_index=True)
+    combined_players = pd.concat([results[game.game_id][1] for game in games], ignore_index=True)
     combined_games.to_csv(output / "synthetic_games.csv", index=False)
     combined_players.to_csv(output / "synthetic_players.csv", index=False)
-    summary = combined_games.groupby(["game_id", "home_team", "away_team"], as_index=False).agg(
-        simulations=("simulation", "count"), home_median=("home_score", "median"), away_median=("away_score", "median"),
-        spread_median=("spread", "median"), total_median=("total", "median"))
-    summary.to_csv(output / "synthetic_summary.csv", index=False)
+    team_table(combined_games).to_csv(output / "synthetic_summary.csv", index=False)
     write_json(output / "run_manifest.json", {"run_id": run_id, "bundle_hash": bundle_hash, "season": args.season,
-        "week": args.week, "simulations_per_game": args.simulations, "backend": args.backend,
-        "teams_requested": teams, "games_completed": len(games), "failures": failures,
-        "home_away_swap_after_simulation": args.simulations // 2,
-        "neutral_site": True, "synthetic_offense_effect": "current league mean", "synthetic_venue_effect": "zero for both teams",
-        "synthetic_feature_cutoff": "scheduled-week pregame rows for active teams; latest strictly before kickoff for bye teams"})
-    print(f"Wrote {len(games)} Ridge synthetic games to {output}")
+        "week": args.week, "simulations_per_pairing": args.simulations, "backend": args.backend,
+        "teams_requested": selected or sorted({game.home_team for game in games}), "games_completed": len(games), "failures": failures,
+        "neutral_site": True, "weather": NEUTRAL_WEATHER, "field": "every team, including itself at half the simulations",
+        "venue_effect": "zero for both teams"})
+    print(f"Wrote {len(games)} league pairings to {output}")
     if failures:
         print(json.dumps(failures, indent=2))
 

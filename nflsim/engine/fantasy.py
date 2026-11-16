@@ -55,15 +55,16 @@ def _numeric_columns(frame: pd.DataFrame, columns: Iterable[str]) -> dict[str, p
 
 
 def skill_fantasy_points(frame: pd.DataFrame) -> pd.Series:
-    """Full-PPR DraftKings scoring with yardage bonuses."""
+    """Full-PPR DraftKings scoring with yardage bonuses, which DraftKings pays at 300 passing and 100 rushing or
+    receiving yards and above. Two-point conversions and return touchdowns aren't simulated for players."""
     values = _numeric_columns(frame, PLAYER_STAT_COLUMNS)
     return (
         values["passing_yards"] * 0.04
-        + (values["passing_yards"] > 300) * 3
+        + (values["passing_yards"] >= 300) * 3
         + values["rushing_yards"] * 0.1
-        + (values["rushing_yards"] > 100) * 3
+        + (values["rushing_yards"] >= 100) * 3
         + values["receiving_yards"] * 0.1
-        + (values["receiving_yards"] > 100) * 3
+        + (values["receiving_yards"] >= 100) * 3
         + values["passing_touchdowns"] * 4
         + values["receiving_touchdowns"] * 6
         + values["rushing_touchdowns"] * 6

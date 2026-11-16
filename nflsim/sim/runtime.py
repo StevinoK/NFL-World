@@ -242,6 +242,13 @@ class RidgeGame(Game):
             first, second = team1.attributes, team2.attributes
             team1.attributes = with_opponent_context(mapping, first, second)
             team2.attributes = with_opponent_context(mapping, second, first)
+        effects = getattr(runtime, "game_effects", None)
+        if effects is not None and effects.has_rain:
+            # Rain reaches plays through the shared rain term (nflsim.models.rain_term); the networks predict a dry game.
+            self.rain = float(team1.attributes.get("weather_precipitation", 0.0))
+            for team in (team1, team2):
+                team.attributes = team.attributes.copy()
+                team.attributes["weather_precipitation"] = 0.0
         runtime.team_context = {team.home: team.attributes.to_dict() for team in (team1, team2)}
         super().__init__(team1, team2, dome, runtime)
 
