@@ -132,5 +132,37 @@ class StackingTest(unittest.TestCase):
         self.assertEqual(int(table.loc[table.index.str.startswith("T.Kelce"), "TDs"].iloc[0]), 1)
 
 
+class PackingTest(unittest.TestCase):
+    def test_squarify_tiles_exactly(self) -> None:
+        areas = [6.0, 6.0, 4.0, 3.0, 2.0, 2.0, 1.0]
+        rects = gr.squarify(areas, 0.0, 0.0, 6.0, 4.0)
+        for area, (_, _, w, h) in zip(areas, rects):
+            self.assertAlmostEqual(w * h, area)
+        for x, y, w, h in rects:
+            self.assertGreaterEqual(x, -1e-9)
+            self.assertGreaterEqual(y, -1e-9)
+            self.assertLessEqual(x + w, 6.0 + 1e-9)
+            self.assertLessEqual(y + h, 4.0 + 1e-9)
+
+    def test_packed_area_matches_epa_and_stays_in_slot(self) -> None:
+        segments = gr.build_target_segments(sample_pbp())
+        stacked = gr.stack_segments(segments, gr.GROUP_PLAYER_GAME)
+        order = gr.unit_order(stacked)
+        packed = gr.pack_segments(stacked, order, px_per_x=100.0, px_per_y=30.0)
+        area = (packed["x1"] - packed["x0"]) * (packed["y1"] - packed["y0"])
+        np.testing.assert_allclose(area / gr.SLOT_WIDTH, packed["epa"].abs(), rtol=1e-9)
+        positions = packed["unit_label"].map({label: i for i, label in enumerate(order)})
+        self.assertTrue((packed["x0"] >= positions - gr.SLOT_WIDTH / 2 - 1e-9).all())
+        self.assertTrue((packed["x1"] <= positions + gr.SLOT_WIDTH / 2 + 1e-9).all())
+        self.assertTrue((packed.loc[packed["positive"], "y0"] >= -1e-9).all())
+        self.assertTrue((packed.loc[~packed["positive"], "y1"] <= 1e-9).all())
+
+    def test_both_layouts_build(self) -> None:
+        segments = gr.build_target_segments(sample_pbp())
+        for layout in (gr.LAYOUT_PACKED, gr.LAYOUT_STACKED):
+            fig = gr.build_epa_figure(segments, layout=layout)
+            self.assertIn("Net EPA", {trace.name for trace in fig.data})
+
+
 if __name__ == "__main__":
     unittest.main()

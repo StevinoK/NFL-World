@@ -47,7 +47,7 @@ python run_feature_dashboard.py
 
 Simulation output defaults to `outputs/simulations/` in the repository and is intentionally ignored by Git.
 
-The results dashboard also has a **Game report** view (sidebar → View) for games that have already been played. It downloads nflverse play-by-play and draws each targeted player's EPA as boxes stacked above (positive) or below (negative) the axis, colored by outcome: reception (air EPA), YAC, penalty (e.g. DPI drawn), incomplete, interception, and fumble lost. Touchdown boxes are hatched (`/` offense, `x` defensive return). Select any mix of team games, or pick players and then the specific games to compare across teams and weeks; show one bar per player-game or combine each player's games. Logic lives in `game_report.py`; run `python -m unittest tests.test_game_report` to check it.
+The results dashboard also has a **Game report** view (sidebar → View) for games that have already been played. It downloads nflverse play-by-play and draws each targeted player's EPA as boxes above (positive) or below (negative) the axis — by default packed like a treemap so each box's area is its EPA, or stacked full-width so height is EPA —, colored by outcome: reception (air EPA), YAC, penalty (e.g. DPI drawn), incomplete, interception, and fumble lost. Touchdown boxes are hatched (`/` offense, `x` defensive return). Select any mix of team games, or pick players and then the specific games to compare across teams and weeks; show one bar per player-game or combine each player's games. Logic lives in `game_report.py`; run `python -m unittest tests.test_game_report` to check it.
 
 ## Modal Game Simulations
 

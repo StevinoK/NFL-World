@@ -256,6 +256,96 @@ def unit_order(stacked: pd.DataFrame) -> List[str]:
     return list(net.index)
 
 
+def squarify(areas: Sequence[float], x: float, y: float, w: float, h: float) -> List[tuple]:
+    """Squarified treemap (Bruls et al.): tile rectangle (x, y, w, h) with ``areas``.
+
+    ``areas`` must be positive, sorted descending, and sum to ``w * h``. Returns one
+    (x, y, w, h) per area in the same order; the first rows sit at (x, y).
+    """
+    def worst(row: List[float], side: float) -> float:
+        total = sum(row)
+        return max(side * side * max(row) / (total * total), total * total / (side * side * min(row)))
+
+    rects: List[tuple] = []
+    remaining = list(areas)
+    while remaining:
+        if len(remaining) == 1 or w <= 0 or h <= 0:
+            row = remaining
+        else:
+            side = min(w, h)
+            row = [remaining[0]]
+            for area in remaining[1:]:
+                if worst(row + [area], side) > worst(row, side):
+                    break
+                row.append(area)
+        total = sum(row)
+        if w >= h:  # lay the row as a column against the left edge
+            col_w = total / h if h > 0 else 0.0
+            cy = y
+            for area in row:
+                rh = area / col_w if col_w > 0 else 0.0
+                rects.append((x, cy, col_w, rh))
+                cy += rh
+            x, w = x + col_w, w - col_w
+        else:  # lay the row along the bottom edge
+            row_h = total / w if w > 0 else 0.0
+            cx = x
+            for area in row:
+                rw = area / row_h if row_h > 0 else 0.0
+                rects.append((cx, y, rw, row_h))
+                cx += rw
+            y, h = y + row_h, h - row_h
+        remaining = remaining[len(row):]
+    return rects
+
+
+LAYOUT_PACKED = "Packed (area = EPA)"
+LAYOUT_STACKED = "Stacked (height = EPA)"
+SLOT_WIDTH = 0.8  # share of each player's x slot used by its boxes
+
+
+def pack_segments(
+    stacked: pd.DataFrame,
+    order: Sequence[str],
+    px_per_x: float = 80.0,
+    px_per_y: float = 20.0,
+    slot_width: float = SLOT_WIDTH,
+) -> pd.DataFrame:
+    """Place each segment as a rectangle whose area is proportional to |EPA|.
+
+    Every player gets a strip ``slot_width`` wide whose height equals its total
+    positive (above the axis) or negative (below) EPA, so a full-width box of height
+    h is worth h EPA and the y axis stays in EPA. Inside the strip, outcome
+    categories are tiled first and plays tiled within their category, both with a
+    squarified treemap computed in pixel space so the tiles look square on screen.
+    """
+    positions = {label: i for i, label in enumerate(order)}
+    out = stacked.copy()
+    for col in ("x0", "x1", "y0", "y1"):
+        out[col] = np.nan
+    for (label, positive), strip in out.groupby(["unit_label", "positive"]):
+        total = strip["epa"].abs().sum()
+        left = positions[label] - slot_width / 2
+        w_px, h_px = slot_width * px_per_x, total * px_per_y
+        scale = w_px * h_px / total  # pixel area per EPA
+        cats = strip.groupby("category")["epa"].apply(lambda s: s.abs().sum()).sort_values(ascending=False)
+        cat_rects = squarify((cats * scale).tolist(), 0.0, 0.0, w_px, h_px)
+        for category, (cx, cy, cw, ch) in zip(cats.index, cat_rects):
+            plays = strip[strip["category"] == category]
+            plays = plays.reindex(plays["epa"].abs().sort_values(ascending=False).index)
+            areas = (plays["epa"].abs() * scale).tolist()
+            # Rescale so floating error never overflows the category rectangle.
+            areas = [a * (cw * ch) / sum(areas) for a in areas]
+            for idx, (px, py, pw, ph) in zip(plays.index, squarify(areas, cx, cy, cw, ch)):
+                y_lo, y_hi = py / px_per_y, (py + ph) / px_per_y
+                if not positive:
+                    y_lo, y_hi = -y_hi, -y_lo
+                out.loc[idx, ["x0", "x1", "y0", "y1"]] = [
+                    left + px / px_per_x, left + (px + pw) / px_per_x, y_lo, y_hi,
+                ]
+    return out
+
+
 def _hover_desc(desc: object, width: int = 70) -> str:
     return "<br>".join(textwrap.wrap(str(desc), width)[:5])
 
@@ -264,6 +354,9 @@ def build_epa_figure(
     segments: pd.DataFrame,
     group_by: str = GROUP_PLAYER_GAME,
     title: str = "Target EPA by outcome",
+    layout: str = LAYOUT_PACKED,
+    plot_width_px: float = 1100.0,
+    height: int = 620,
 ) -> go.Figure:
     stacked = stack_segments(segments, group_by)
     fig = go.Figure()
@@ -271,12 +364,39 @@ def build_epa_figure(
         fig.update_layout(title=title)
         return fig
     order = unit_order(stacked)
+    positions = {label: i for i, label in enumerate(order)}
+
+    ups = stacked[stacked["positive"]].groupby("unit_label")["epa"].sum()
+    downs = stacked[~stacked["positive"]].groupby("unit_label")["epa"].sum()
+    top = max(float(ups.max()) if len(ups) else 0.0, 0.5)
+    bottom = min(float(downs.min()) if len(downs) else 0.0, -0.5)
+    pad = 0.04 * (top - bottom)
+    y_range = [bottom - pad, top + pad]
+
+    if layout == LAYOUT_PACKED:
+        plot_height_px = height - 110 - 110  # minus top legend/title and bottom tick labels
+        rects = pack_segments(
+            stacked, order,
+            px_per_x=plot_width_px / len(order),
+            px_per_y=plot_height_px / (y_range[1] - y_range[0]),
+        )
+        rects["x_mid"] = (rects["x0"] + rects["x1"]) / 2
+        rects["box_w"] = rects["x1"] - rects["x0"]
+        rects["box_base"] = rects["y0"]
+        rects["box_h"] = rects["y1"] - rects["y0"]
+    else:
+        rects = stacked.copy()
+        rects["x_mid"] = rects["unit_label"].map(positions).astype(float)
+        rects["box_w"] = 0.7
+        rects["box_base"] = rects["base"]
+        rects["box_h"] = rects["epa"]
+
     # Box outlines separate plays; thin them when bars hold many plays (combined view).
     max_boxes = int(stacked.groupby("unit").size().max())
     outline = 1.5 if max_boxes <= 30 else 0.75 if max_boxes <= 80 else 0.4
 
     for category in CATEGORIES:
-        part = stacked[stacked["category"] == category]
+        part = rects[rects["category"] == category]
         if part.empty:
             continue
         # Plotly draws the legend swatch from the first bar; keep that one unpatterned.
@@ -288,13 +408,15 @@ def build_epa_figure(
             [f"Q{int(q)} {t}" if pd.notna(q) else "" for q, t in zip(part["qtr"], part["time"])],
             [_hover_desc(d) for d in part["desc"]],
             np.where(part["td"] == "none", "", np.where(part["td"] == "offense", " · TD", " · Defensive TD")),
+            [f"{e:+.2f}" for e in part["epa"]],
         ], axis=-1)
         fig.add_trace(go.Bar(
             name=category,
             legendgroup=category,
-            x=part["unit_label"],
-            y=part["epa"],
-            base=part["base"],
+            x=part["x_mid"],
+            y=part["box_h"],
+            base=part["box_base"],
+            width=part["box_w"],
             marker=dict(
                 color=CATEGORY_COLORS[category],
                 line=dict(color="rgba(255,255,255,0.85)", width=outline),
@@ -306,11 +428,10 @@ def build_epa_figure(
                     solidity=0.3,
                 ),
             ),
-            width=0.7,
             customdata=custom,
             hovertemplate=(
                 "<b>%{customdata[0]}</b> · %{customdata[1]}<br>%{customdata[2]}<br>"
-                f"{category}: " + "%{y:+.2f} EPA%{customdata[4]}<br><br>%{customdata[3]}<extra></extra>"
+                f"{category}: " + "%{customdata[5]} EPA%{customdata[4]}<br><br>%{customdata[3]}<extra></extra>"
             ),
         ))
 
@@ -318,7 +439,7 @@ def build_epa_figure(
     for td_kind, label in (("offense", "Touchdown"), ("defense", "Defensive TD (return)")):
         if (stacked["td"] == td_kind).any():
             fig.add_trace(go.Bar(
-                name=label, x=[order[0]], y=[0], base=[0], showlegend=True, hoverinfo="skip",
+                name=label, x=[0], y=[0], base=[0], width=[0], showlegend=True, hoverinfo="skip",
                 marker=dict(color="rgba(0,0,0,0)", line=dict(color="#8f8e88", width=1),
                             pattern=dict(shape=TD_PATTERNS[td_kind], fillmode="replace", fgcolor="#52514e", size=7)),
             ))
@@ -328,26 +449,29 @@ def build_epa_figure(
         plays=("play_id", "nunique"),
     ).reindex(order)
     fig.add_trace(go.Scatter(
-        name="Net EPA", x=net.index, y=net["net"], mode="markers",
+        name="Net EPA", x=list(range(len(order))), y=net["net"], mode="markers",
         marker=dict(symbol="diamond", size=10, color="#0b0b0b", line=dict(color="white", width=2)),
         customdata=np.stack([net["player"], net["plays"]], axis=-1),
         hovertemplate="<b>%{customdata[0]}</b><br>Net %{y:+.2f} EPA on %{customdata[1]} targets<extra></extra>",
     ))
 
+    y_title = "EPA (box area ∝ EPA)" if layout == LAYOUT_PACKED else "EPA"
     fig.add_hline(y=0, line=dict(color="#52514e", width=1.5))
     fig.update_layout(
         title=title,
         barmode="overlay",
-        bargap=0.25,
-        height=620,
+        height=height,
         hovermode="closest",
         title_y=0.97,
         legend=dict(orientation="h", yanchor="bottom", y=1.01, xanchor="left", x=0),
         margin=dict(t=110, b=40, l=60, r=20),
         plot_bgcolor="rgba(0,0,0,0)",
-        xaxis=dict(categoryorder="array", categoryarray=order, tickangle=-45 if len(order) > 12 else 0,
-                   automargin=True),
-        yaxis=dict(title="EPA", zeroline=False, gridcolor="rgba(128,128,128,0.18)"),
+        xaxis=dict(
+            tickmode="array", tickvals=list(range(len(order))), ticktext=order,
+            range=[-0.6, len(order) - 0.4], showgrid=False, zeroline=False,
+            tickangle=-45 if len(order) > 12 else 0, automargin=True,
+        ),
+        yaxis=dict(title=y_title, range=y_range, zeroline=False, gridcolor="rgba(128,128,128,0.18)"),
     )
     return fig
 

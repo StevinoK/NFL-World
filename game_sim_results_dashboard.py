@@ -598,12 +598,13 @@ def load_target_segments(season: int) -> pd.DataFrame:
 def render_game_report() -> None:
     st.header("Game report: target EPA by outcome")
     st.caption(
-        "Each box is one target's EPA (completions split into air and YAC). Boxes above the line "
-        "added EPA, boxes below cost EPA. Hatched boxes are touchdowns (/ = offense scored, "
+        "Each box is one target's EPA (completions split into air and YAC); in the packed layout a "
+        "box's area is its EPA. Boxes above the line added EPA, boxes below cost EPA. Hatched boxes "
+        "are touchdowns (/ = offense scored, "
         "x = defensive return TD). The diamond is the player's net EPA."
     )
     latest = current_nfl_season()
-    controls = st.columns([2, 2, 2, 1])
+    controls = st.columns([2, 2, 2, 2, 1])
     seasons = controls[0].multiselect(
         "Seasons", list(range(latest, 1998, -1)), default=[latest], key="report_seasons"
     )
@@ -614,7 +615,11 @@ def render_game_report() -> None:
         "Bars", [game_report.GROUP_PLAYER_GAME, game_report.GROUP_PLAYER], horizontal=True,
         key="report_group_by",
     )
-    min_targets = controls[3].number_input("Min targets", min_value=1, value=1, step=1, key="report_min_tgt")
+    box_layout = controls[3].radio(
+        "Boxes", [game_report.LAYOUT_PACKED, game_report.LAYOUT_STACKED], horizontal=True,
+        key="report_layout",
+    )
+    min_targets = controls[4].number_input("Min targets", min_value=1, value=1, step=1, key="report_min_tgt")
     if not seasons:
         st.info("Select at least one season.")
         return
@@ -671,7 +676,7 @@ def render_game_report() -> None:
         return
     table = game_report.category_table(selected, group_by)
 
-    fig = game_report.build_epa_figure(selected, group_by)
+    fig = game_report.build_epa_figure(selected, group_by, layout=box_layout)
     # Streamlit's chart theme drops plotly fill patterns, which hides the touchdown boxes.
     st.plotly_chart(fig, use_container_width=True, theme=None)
     with st.expander("Table view", expanded=False):
