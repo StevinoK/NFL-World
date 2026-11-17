@@ -132,6 +132,26 @@ class StackingTest(unittest.TestCase):
         self.assertEqual(int(table.loc[table.index.str.startswith("T.Kelce"), "TDs"].iloc[0]), 1)
 
 
+class WeekRangeTest(unittest.TestCase):
+    def test_range_spans_seasons_and_totals_per_player(self) -> None:
+        frames = [
+            sample_pbp().assign(season=2024, week=17, game_id="2024_17_KC_X"),
+            sample_pbp().assign(week=2, game_id="2025_02_KC_Y"),
+            sample_pbp(),  # 2025 week 3
+            sample_pbp().assign(week=5, game_id="2025_05_KC_Z"),
+        ]
+        segments = gr.build_target_segments(pd.concat(frames, ignore_index=True))
+        weeks = gr.week_options(segments)
+        self.assertEqual(list(weeks.values()), [(2024, 17), (2025, 2), (2025, 3), (2025, 5)])
+        catalog = gr.player_game_catalog(segments)
+        in_range = gr.games_in_range(catalog[catalog["player_id"] == "P1"], (2024, 17), (2025, 3))
+        self.assertEqual(set(in_range["game_id"]), {"2024_17_KC_X", "2025_02_KC_Y", "2025_03_KC_BUF"})
+        picked = gr.select_player_games(segments, in_range[["player_id", "game_id"]].values)
+        table = gr.category_table(picked, gr.GROUP_PLAYER)
+        self.assertEqual(len(table), 1)
+        self.assertAlmostEqual(table["Net EPA"].iloc[0], -1.3 * 3)
+
+
 class PackingTest(unittest.TestCase):
     def test_squarify_tiles_exactly(self) -> None:
         areas = [6.0, 6.0, 4.0, 3.0, 2.0, 2.0, 1.0]

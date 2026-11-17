@@ -176,6 +176,25 @@ def week_label(season: int, week: int, season_type: str = "REG") -> str:
     return f"{season} W{week}{suffix}"
 
 
+def week_options(segments: pd.DataFrame) -> Dict[str, tuple]:
+    """Chronological {label: (season, week)} for every week present in ``segments``."""
+    weeks = (
+        segments[["season", "week", "season_type"]]
+        .drop_duplicates(["season", "week"])
+        .sort_values(["season", "week"])
+    )
+    return {week_label(r.season, r.week, r.season_type): (int(r.season), int(r.week)) for r in weeks.itertuples()}
+
+
+def games_in_range(catalog: pd.DataFrame, start: tuple, end: tuple) -> pd.DataFrame:
+    """Rows of a game catalog whose (season, week) falls within [start, end], inclusive."""
+    if catalog.empty:
+        return catalog
+    keys = list(zip(catalog["season"].astype(int), catalog["week"].astype(int)))
+    low, high = min(start, end), max(start, end)
+    return catalog[[low <= key <= high for key in keys]]
+
+
 def team_game_catalog(segments: pd.DataFrame) -> pd.DataFrame:
     """Unique (game, offense) pairs, most recent first, with a display label."""
     cat = (

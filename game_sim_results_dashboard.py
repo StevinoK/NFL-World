@@ -611,9 +611,10 @@ def render_game_report() -> None:
     mode = controls[1].radio(
         "Select by", ["Team games", "Players"], horizontal=True, key="report_mode"
     )
+    # Players are compared on season/range totals by default; team games per game.
     group_by = controls[2].radio(
         "Bars", [game_report.GROUP_PLAYER_GAME, game_report.GROUP_PLAYER], horizontal=True,
-        key="report_group_by",
+        index=1 if mode == "Players" else 0, key=f"report_group_by_{mode}",
     )
     box_layout = controls[3].radio(
         "Boxes", [game_report.LAYOUT_PACKED, game_report.LAYOUT_STACKED], horizontal=True,
@@ -657,13 +658,24 @@ def render_game_report() -> None:
         chosen_players = st.multiselect(
             "Players", list(player_labels), format_func=player_labels.get, key="report_players",
         )
-        options = catalog[catalog["player_id"].isin(chosen_players)]
-        game_labels = options["label"].tolist()
-        chosen_games = st.multiselect(
-            "Games for those players", game_labels, default=game_labels, key=f"report_player_games_{'_'.join(chosen_players)}",
-            help="Defaults to every game; trim to compare specific weeks.",
+        weeks = game_report.week_options(segments)
+        week_labels = list(weeks)
+        if len(week_labels) > 1:
+            start_label, end_label = st.select_slider(
+                "Week range", options=week_labels, value=(week_labels[0], week_labels[-1]),
+                key="report_week_range",
+                help="Each player's bar totals every target in this range.",
+            )
+        else:
+            start_label = end_label = week_labels[0]
+        options = game_report.games_in_range(
+            catalog[catalog["player_id"].isin(chosen_players)], weeks[start_label], weeks[end_label]
         )
-        picked = options[options["label"].isin(chosen_games)]
+        with st.expander("Exclude specific games", expanded=False):
+            excluded = st.multiselect(
+                "Games to leave out", options["label"].tolist(), key="report_excluded_games",
+            )
+        picked = options[~options["label"].isin(excluded)]
         selected = game_report.select_player_games(segments, picked[["player_id", "game_id"]].values)
 
     if selected.empty:
