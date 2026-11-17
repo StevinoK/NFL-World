@@ -43,7 +43,7 @@ PBP_COLUMNS = [
     "epa", "air_epa", "yac_epa", "complete_pass", "incomplete_pass", "interception",
     "penalty", "fumble_lost", "fumbled_1_player_id", "fumbled_2_player_id",
     "receiver_player_id", "receiver_player_name", "rusher_player_id", "rusher_player_name",
-    "qb_kneel", "touchdown", "td_team",
+    "qb_kneel", "touchdown", "td_team", "fixed_drive",
 ]
 
 KIND_TARGET = "Target"
@@ -207,6 +207,7 @@ def build_player_segments(pbp: pd.DataFrame, kinds: Sequence[str] = tuple(KINDS)
     seg["epa"] = seg["seg_epa"].astype(float)
     seg["week"] = seg["week"].astype(int)
     seg["season"] = seg["season"].astype(int)
+    seg["drive"] = seg["fixed_drive"]
     return seg[SEGMENT_COLUMNS].reset_index(drop=True)
 
 
@@ -217,7 +218,7 @@ def build_target_segments(pbp: pd.DataFrame) -> pd.DataFrame:
 
 SEGMENT_COLUMNS = [
     "season", "season_type", "week", "game_id", "play_id", "team", "opponent", "qtr",
-    "time", "desc", "player_id", "player_name", "kind", "category", "epa", "td",
+    "time", "desc", "player_id", "player_name", "kind", "category", "epa", "td", "drive",
 ]
 
 
@@ -595,6 +596,13 @@ def filter_min_plays(segments: pd.DataFrame, group_by: str, min_plays: int) -> p
 
 
 filter_min_targets = filter_min_plays  # backward-compatible name
+
+
+def select_drives(segments: pd.DataFrame, game_id: str, drives: Iterable[int]) -> pd.DataFrame:
+    """Keep only ``game_id``'s plays from the given ``fixed_drive`` numbers."""
+    wanted = {int(d) for d in drives}
+    in_game = segments["game_id"] == game_id
+    return segments[in_game & segments["drive"].isin(wanted)]
 
 
 def select_team_games(segments: pd.DataFrame, game_team_pairs: Iterable[Sequence[str]]) -> pd.DataFrame:

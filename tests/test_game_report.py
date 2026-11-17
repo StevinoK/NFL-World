@@ -179,6 +179,13 @@ class StackingTest(unittest.TestCase):
         filtered = gr.filter_min_targets(team, gr.GROUP_PLAYER_GAME, 2)
         self.assertEqual(set(filtered["player_id"]), {"P1"})
 
+    def test_select_drives(self) -> None:
+        pbp = sample_pbp().assign(fixed_drive=[1, 1, 2, 2, 3, 3, 4, 4])
+        segments = gr.build_target_segments(pbp)
+        picked = gr.select_drives(segments, "2025_03_KC_BUF", [2, 3])
+        self.assertEqual(sorted(picked["play_id"].unique()), [3, 4, 5, 6])
+        self.assertTrue(gr.select_drives(segments, "other_game", [2]).empty)
+
     def test_figure_and_table(self) -> None:
         segments = gr.build_target_segments(sample_pbp())
         fig = gr.build_epa_figure(segments)

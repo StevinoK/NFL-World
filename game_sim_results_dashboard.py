@@ -24,6 +24,7 @@ from matplotlib.colors import BoundaryNorm, LightSource, LinearSegmentedColormap
 from matplotlib.ticker import MaxNLocator, PercentFormatter
 from scipy.ndimage import gaussian_filter
 from project_paths import DEFAULT_SIMULATION_OUTPUT_DIR
+import game_flow
 import game_report
 
 try:
@@ -589,14 +590,119 @@ def current_nfl_season(today: Optional[pd.Timestamp] = None) -> int:
     return today.year if today.month >= 9 else today.year - 1
 
 
+REPORT_PBP_COLUMNS = sorted(set(game_report.PBP_COLUMNS) | set(game_flow.GAME_COLUMNS))
+
+
 @st.cache_data(show_spinner="Loading play-by-play...", ttl=3600)
+def load_pbp(season: int) -> pd.DataFrame:
+    return nfl.import_pbp_data([season], columns=REPORT_PBP_COLUMNS, downcast=True, cache=False)
+
+
+@st.cache_data(show_spinner=False, ttl=3600)
 def load_player_segments(season: int) -> pd.DataFrame:
-    pbp = nfl.import_pbp_data([season], columns=game_report.PBP_COLUMNS, downcast=True, cache=False)
-    return game_report.build_player_segments(pbp)
+    return game_report.build_player_segments(load_pbp(season))
+
+
+@st.cache_data(show_spinner=False)
+def _team_color_tables() -> Tuple[Dict[str, str], Dict[str, str]]:
+    try:
+        desc = nfl.import_team_desc()[["team_abbr", "team_color", "team_color2"]]
+    except Exception:
+        return {}, {}
+    primary = dict(zip(desc["team_abbr"], desc["team_color"]))
+    secondary = dict(zip(desc["team_abbr"], desc["team_color2"]))
+    for alias, source in TEAM_DESC_ALIASES.items():
+        primary.setdefault(alias, primary.get(source))
+        secondary.setdefault(alias, secondary.get(source))
+    return primary, secondary
+
+
+def matchup_colors(home: str, away: str) -> Dict[str, str]:
+    primary, secondary = _team_color_tables()
+    return game_flow.distinct_team_colors(home, away, primary, secondary, RIGHT_COLOR, LEFT_COLOR)
+
+
+def render_drive_filter(
+    selected: pd.DataFrame,
+    game_id: str,
+    drives: pd.DataFrame,
+    chart_event: Optional[object] = None,
+) -> pd.DataFrame:
+    """Drive picker for the player chart; clicking/box-selecting drive bars also sets it."""
+    drives = drives[drives["team"].isin(selected["team"].unique())]
+    if drives.empty:
+        return selected
+    options = drives["drive"].tolist()
+    labels = dict(zip(drives["drive"], drives["label"]))
+    key = f"report_drives_{game_id}"
+    sig_key = f"{key}_chart_selection"
+
+    if chart_event is not None:
+        points = chart_event.get("selection", {}).get("points", []) if hasattr(chart_event, "get") else []
+        seqs = {int(round(float(p["x"]))) for p in points if "x" in p}
+        from_chart = drives.loc[drives["seq"].isin(seqs), "drive"].tolist()
+        # Only a new chart selection overrides the picker, so manual edits stick.
+        if st.session_state.get(sig_key) != tuple(from_chart):
+            st.session_state[sig_key] = tuple(from_chart)
+            st.session_state[key] = from_chart
+    if key in st.session_state:
+        st.session_state[key] = [d for d in st.session_state[key] if d in options]
+    chosen = st.multiselect(
+        "Drives", options, format_func=labels.get, key=key, placeholder="All drives",
+        help="Filters the receiving/rushing chart; leave empty for all drives. Click or box-select "
+             "bars in the drive chart (double-click to clear), or pick here.",
+    )
+    if not chosen:
+        return selected
+    return game_report.select_drives(selected, game_id, chosen)
+
+
+def render_single_game(pbp: pd.DataFrame, segments: pd.DataFrame) -> Optional[pd.DataFrame]:
+    """Win-probability and EPA worms plus drive summary; returns the game's player segments."""
+    catalog = game_flow.game_catalog(pbp)
+    if catalog.empty:
+        st.info("No completed games found for the selected seasons.")
+        return None
+    labels = dict(zip(catalog["label"], catalog["game_id"]))
+    game_id = labels[st.selectbox("Game", list(labels), key="report_single_game")]
+    plays = game_flow.game_plays(pbp, game_id)
+    home, away = plays["home_team"].iloc[0], plays["away_team"].iloc[0]
+    colors = matchup_colors(home, away)
+
+    toggles = st.columns(2)
+    include_st = toggles[0].checkbox(
+        "Include special teams in EPA", value=False, key="report_include_st",
+        help="Adds kickoffs, punts, field goals and extra points to the EPA worm and drive EPA.",
+    )
+    spread = toggles[1].checkbox(
+        "Spread-adjusted win probability", value=False, key="report_vegas_wp",
+        help="Uses nflverse's win probability that also accounts for the closing point spread.",
+    )
+    left, right = st.columns(2)
+    left.plotly_chart(
+        game_flow.build_wp_figure(plays, colors[home], colors[away], spread_adjusted=spread),
+        use_container_width=True, theme=None,
+    )
+    right.plotly_chart(
+        game_flow.build_epa_worm(plays, colors, include_special_teams=include_st),
+        use_container_width=True, theme=None,
+    )
+
+    drives = game_flow.drive_summary(plays, include_special_teams=include_st)
+    event = st.plotly_chart(
+        game_flow.build_drive_figure(drives, colors), use_container_width=True, theme=None,
+        on_select="rerun", selection_mode=("points", "box"), key=f"report_drive_chart_{game_id}",
+    )
+    with st.expander("Drive table", expanded=False):
+        st.dataframe(game_flow.drive_table(drives), use_container_width=True)
+
+    st.subheader("Receiving & rushing")
+    selected = segments[segments["game_id"] == game_id]
+    return render_drive_filter(selected, game_id, drives, event)
 
 
 def render_game_report() -> None:
-    st.header("Game report: player EPA by outcome")
+    st.header("Game report")
     st.caption(
         "Each box is one target or carry (completions split into air and YAC); in the packed layout a "
         "box's area is its EPA. Boxes above the line added EPA, boxes below cost EPA, and outcome "
@@ -609,7 +715,7 @@ def render_game_report() -> None:
         "Seasons", list(range(latest, 1998, -1)), default=[latest], key="report_seasons"
     )
     mode = controls[1].radio(
-        "Select by", ["Team games", "Players"], horizontal=True, key="report_mode"
+        "Select by", ["Single game", "Team games", "Players"], horizontal=True, key="report_mode"
     )
     kind_labels = {game_report.KIND_TARGET: "Targets", game_report.KIND_RUSH: "Rushes"}
     kinds = controls[2].multiselect(
@@ -650,7 +756,13 @@ def render_game_report() -> None:
         st.info("No plays of the selected types.")
         return
 
-    if mode == "Team games":
+    if mode == "Single game":
+        pbp = pd.concat([load_pbp(int(season)) for season in sorted(seasons)
+                         if int(season) in set(segments["season"])], ignore_index=True)
+        selected = render_single_game(pbp, segments)
+        if selected is None:
+            return
+    elif mode == "Team games":
         catalog = game_report.team_game_catalog(segments)
         labels = catalog["label"].tolist()
         chosen = st.multiselect(
@@ -659,6 +771,10 @@ def render_game_report() -> None:
         )
         picked = catalog[catalog["label"].isin(chosen)]
         selected = game_report.select_team_games(segments, picked[["game_id", "team"]].values)
+        if picked["game_id"].nunique() == 1:
+            game_id = picked["game_id"].iloc[0]
+            plays = game_flow.game_plays(load_pbp(int(picked["season"].iloc[0])), game_id)
+            selected = render_drive_filter(selected, game_id, game_flow.drive_summary(plays))
     else:
         catalog = game_report.player_game_catalog(segments)
         players = (
