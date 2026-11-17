@@ -27,6 +27,7 @@ from nflsim.paths import ROOT, digest, write_json
 BASE = ROOT / "artifacts/runtime"
 MODEL_FILES = ("model.pt", "preprocessor.pkl", "columns.pkl", "arch.json", "bins.csv")
 USAGE_PARAMS, SPECIAL_TEAMS_PARAMS = "usage_params.json", "special_teams_params.json"
+QB_AWARE_PARAMS = "qb_aware_params.json"  # nflsim.features.qb_aware.PARAMS_NAME
 
 
 def package(refit_dir: Path, effects: Path, output: Path, base: Path = BASE, player_table: Path | None = None,
@@ -100,6 +101,10 @@ def package(refit_dir: Path, effects: Path, output: Path, base: Path = BASE, pla
         features["special_teams"] = json.loads(special.read_text()) if special.is_file() else {"source": str(team_table)}
         if "params" in features["special_teams"]:
             write_json(output / SPECIAL_TEAMS_PARAMS, features["special_teams"]["params"])
+        qb_aware = team_table.parent / "qb_aware_manifest.json"
+        if qb_aware.is_file():  # the weekly refresh re-applies the QB-aware passing shift with these parameters
+            features["qb_aware"] = json.loads(qb_aware.read_text())
+            write_json(output / QB_AWARE_PARAMS, features["qb_aware"]["params"])
         write_json(output / "feature_manifest.json", features)
 
     lineage = {**copy.deepcopy(base_state["lineage"]), "config": digest(output / "model_manifest.json"),

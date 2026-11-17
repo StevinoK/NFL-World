@@ -289,19 +289,23 @@ def update_bundle_feature_lineage(candidate: Path) -> None:
 
 
 def refresh_derived_features(base_bundle: Path, feature_dir: Path, inputs: Path, feature_manifest: dict) -> None:
-    """Recompute usage shares and special-teams columns on the rebuilt wide tables when the base bundle's models use them.
+    """Recompute usage shares, special-teams columns and the QB-aware passing shift on the rebuilt wide tables when the base
+    bundle's models use them.
 
-    Bundles packaged with ``usage_params.json`` / ``special_teams_params.json`` were trained on those features;
+    Bundles packaged with ``usage_params.json`` / ``special_teams_params.json`` / ``qb_aware_params.json`` were trained on those features;
     without this the refreshed tables would fall back to the ridge build's older share estimates.
     """
-    from nflsim.features import special_teams, usage
-    from nflsim.models.package_game_effects_bundle import SPECIAL_TEAMS_PARAMS, USAGE_PARAMS
+    from nflsim.features import qb_aware, special_teams, usage
+    from nflsim.models.package_game_effects_bundle import QB_AWARE_PARAMS, SPECIAL_TEAMS_PARAMS, USAGE_PARAMS
 
     jobs = (("player_stats_wide.csv", USAGE_PARAMS, "usage", {"player_id": str, "game_id": str},
              lambda table, params: usage.apply_usage(table, params, inputs), lambda params: usage.manifest(params_path, base_bundle)),
             ("team_stats_wide.csv", SPECIAL_TEAMS_PARAMS, "special_teams", {"game_id": str},
              lambda table, params: special_teams.apply_special_teams(table, params, inputs),
-             lambda params: special_teams.manifest(params, base_bundle)))
+             lambda params: special_teams.manifest(params, base_bundle)),
+            ("team_stats_wide.csv", QB_AWARE_PARAMS, "qb_aware", {"game_id": str},
+             lambda table, params: qb_aware.apply_qb_aware(table, params, inputs),
+             lambda params: qb_aware.manifest(params, base_bundle)))
     for table_name, params_name, key, dtypes, apply, describe in jobs:
         params_path = base_bundle / params_name
         if not params_path.is_file():
