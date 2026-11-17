@@ -184,9 +184,33 @@ class QuarterbackTest(unittest.TestCase):
             (203, gr.KIND_SCRAMBLE, "Scramble"): 0.9,
             (204, gr.KIND_SACK, "Penalty"): 0.6,
             (205, gr.KIND_SCRAMBLE, "Penalty"): -0.7,
+            (206, gr.KIND_PASS, "Reception"): 0.1,
+            (206, gr.KIND_PASS, "YAC"): 0.3,
         })
         self.assertEqual(set(qb["position"]), {"QB"})  # inferred without a roster
-        self.assertEqual(self.segments.loc[self.segments["play_id"] == 206, "player_id"].tolist(), ["P1", "P1"])
+
+    def test_targeted_pass_credits_qb_and_receiver(self) -> None:
+        rows = self.segments[self.segments["play_id"] == 206]
+        by_player = {pid: dict(zip(g["category"], g["epa"].round(6))) for pid, g in rows.groupby("player_id")}
+        self.assertEqual(by_player, {"P1": {"Reception": 0.1, "YAC": 0.3}, "QB1": {"Reception": 0.1, "YAC": 0.3}})
+        notes = rows.set_index("kind")["note"].to_dict()
+        self.assertEqual(notes[gr.KIND_PASS], "pass to T.Kelce")
+        self.assertEqual(notes[gr.KIND_TARGET], "")
+
+    def test_pass_split_matches_target_split_on_real_shapes(self) -> None:
+        # Nullified DPI with no passer id: the passer is parsed from the description.
+        pbp = pd.concat([qb_pbp(), pd.DataFrame([play(
+            207, desc="15-P.Mahomes pass incomplete deep right to 87-T.Kelce. PENALTY on BUF-24-A.B, "
+                      "Defensive Pass Interference, 25 yards - No Play.",
+            play_type="no_play", epa=1.8, penalty=1.0, receiver_player_id=None, receiver_player_name=None,
+            passer_player_id=None, passer_player_name=None)])], ignore_index=True)
+        seg = gr.build_player_segments(pbp)
+        dpi = seg[seg["play_id"] == 207]
+        self.assertEqual(sorted(zip(dpi["kind"], dpi["player_id"], dpi["category"])),
+                         [(gr.KIND_PASS, "QB1", "Penalty"), (gr.KIND_TARGET, "P1", "Penalty")])
+        passes = seg[seg["kind"] == gr.KIND_PASS].groupby("play_id")["epa"].sum()
+        targets = seg[seg["kind"] == gr.KIND_TARGET].groupby("play_id")["epa"].sum()
+        pd.testing.assert_series_equal(passes, targets)
 
     def test_untargeted_passes_credit_the_passer(self) -> None:
         def qb(play_id: int, **kw) -> dict:

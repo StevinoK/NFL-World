@@ -716,10 +716,12 @@ def render_single_game(pbp: pd.DataFrame, segments: pd.DataFrame) -> Optional[pd
 def render_game_report() -> None:
     st.header("Game report")
     st.caption(
-        "Each box is one target, carry, scramble, sack or untargeted pass (completions split into air and YAC); bars are "
+        "Each box is one target, pass, carry, scramble, sack or untargeted pass (completions split into air and YAC); bars are "
         "grouped by position (QB, RB, WR, TE). In the packed layout a box's area is its EPA. Boxes above the line added EPA, boxes below cost EPA, and outcome "
         "colors keep the same order away from the line in every bar. Hatched boxes are touchdowns "
-        "(/ = offense scored, x = defensive return TD). The diamond is the player's net EPA."
+        "(/ = offense scored, x = defensive return TD). The diamond is the player's net EPA. Targeted passes "
+        "count for both the QB (Passes) and the receiver, so bars don't add up to team EPA unless one of "
+        "Passes or Targets is excluded."
     )
     latest = current_nfl_season()
     controls = st.columns([2, 2, 2])
@@ -745,7 +747,7 @@ def render_game_report() -> None:
     )
     min_plays = controls[2].number_input(
         "Min plays", min_value=1, value=1, step=1, key="report_min_plays",
-        help="Minimum plays (targets, carries, scrambles, sacks and untargeted passes) for a bar to be shown.",
+        help="Minimum plays (passes, targets, carries, scrambles, sacks and untargeted passes) for a bar to be shown.",
     )
     if not seasons or not kinds:
         st.info("Select at least one season and one play type.")
@@ -793,8 +795,10 @@ def render_game_report() -> None:
             .agg(player_name=("player_name", "first"), teams=("team", lambda s: "/".join(dict.fromkeys(s))),
                  position=("position", lambda s: s.mode().iloc[0]),
                  touches=("targets", "sum"), rushes=("rushes", "sum"),
-                 scrambles=("scrambles", "sum"), sacks=("sacks", "sum"), untargeted=("untargeted", "sum"))
-            .assign(touches=lambda d: d["touches"] + d["rushes"] + d["scrambles"] + d["sacks"] + d["untargeted"])
+                 scrambles=("scrambles", "sum"), sacks=("sacks", "sum"), untargeted=("untargeted", "sum"),
+                 passes=("passes", "sum"))
+            .assign(touches=lambda d: d["touches"] + d["rushes"] + d["scrambles"] + d["sacks"]
+                    + d["untargeted"] + d["passes"])
             .sort_values("touches", ascending=False)
         )
         player_labels = {
