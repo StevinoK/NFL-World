@@ -24,6 +24,7 @@ from matplotlib.colors import BoundaryNorm, LightSource, LinearSegmentedColormap
 from matplotlib.ticker import MaxNLocator, PercentFormatter
 from scipy.ndimage import gaussian_filter
 from project_paths import DEFAULT_SIMULATION_OUTPUT_DIR
+import game_report
 
 try:
     from streamlit.runtime.scriptrunner import get_script_run_ctx
@@ -580,11 +581,112 @@ def render_stat_histograms(
     render_receptions_chart(game_players, selected_sims)
 
 
+# ------------------------------------------------------------ game report (actual games)
+
+
+def current_nfl_season(today: Optional[pd.Timestamp] = None) -> int:
+    today = today or pd.Timestamp.today()
+    return today.year if today.month >= 9 else today.year - 1
+
+
+@st.cache_data(show_spinner="Loading play-by-play...", ttl=3600)
+def load_target_segments(season: int) -> pd.DataFrame:
+    pbp = nfl.import_pbp_data([season], columns=game_report.PBP_COLUMNS, downcast=True, cache=False)
+    return game_report.build_target_segments(pbp)
+
+
+def render_game_report() -> None:
+    st.header("Game report: target EPA by outcome")
+    st.caption(
+        "Each box is one target's EPA (completions split into air and YAC). Boxes above the line "
+        "added EPA, boxes below cost EPA. Hatched boxes are touchdowns (/ = offense scored, "
+        "x = defensive return TD). The diamond is the player's net EPA."
+    )
+    latest = current_nfl_season()
+    controls = st.columns([2, 2, 2, 1])
+    seasons = controls[0].multiselect(
+        "Seasons", list(range(latest, 1998, -1)), default=[latest], key="report_seasons"
+    )
+    mode = controls[1].radio(
+        "Select by", ["Team games", "Players"], horizontal=True, key="report_mode"
+    )
+    group_by = controls[2].radio(
+        "Bars", [game_report.GROUP_PLAYER_GAME, game_report.GROUP_PLAYER], horizontal=True,
+        key="report_group_by",
+    )
+    min_targets = controls[3].number_input("Min targets", min_value=1, value=1, step=1, key="report_min_tgt")
+    if not seasons:
+        st.info("Select at least one season.")
+        return
+
+    frames = []
+    for season in sorted(seasons):
+        try:
+            frames.append(load_target_segments(int(season)))
+        except Exception as error:  # season not published yet, network issue, ...
+            st.warning(f"Could not load {season} play-by-play: {error}")
+    frames = [f for f in frames if not f.empty]
+    if not frames:
+        st.info("No completed games found for the selected seasons.")
+        return
+    segments = pd.concat(frames, ignore_index=True)
+
+    if mode == "Team games":
+        catalog = game_report.team_game_catalog(segments)
+        labels = catalog["label"].tolist()
+        chosen = st.multiselect(
+            "Team games (offense)", labels, default=labels[:1], key="report_team_games",
+            help="Pick any mix of teams and weeks; each team's targets in that game are shown.",
+        )
+        picked = catalog[catalog["label"].isin(chosen)]
+        selected = game_report.select_team_games(segments, picked[["game_id", "team"]].values)
+    else:
+        catalog = game_report.player_game_catalog(segments)
+        players = (
+            catalog.groupby("player_id")
+            .agg(player_name=("player_name", "first"), teams=("team", lambda s: "/".join(dict.fromkeys(s))),
+                 targets=("targets", "sum"))
+            .sort_values("targets", ascending=False)
+        )
+        player_labels = {pid: f"{r.player_name} ({r.teams})" for pid, r in players.iterrows()}
+        chosen_players = st.multiselect(
+            "Players", list(player_labels), format_func=player_labels.get, key="report_players",
+        )
+        options = catalog[catalog["player_id"].isin(chosen_players)]
+        game_labels = options["label"].tolist()
+        chosen_games = st.multiselect(
+            "Games for those players", game_labels, default=game_labels, key=f"report_player_games_{'_'.join(chosen_players)}",
+            help="Defaults to every game; trim to compare specific weeks.",
+        )
+        picked = options[options["label"].isin(chosen_games)]
+        selected = game_report.select_player_games(segments, picked[["player_id", "game_id"]].values)
+
+    if selected.empty:
+        st.info("Pick at least one team game or player game to draw the report.")
+        return
+
+    selected = game_report.filter_min_targets(selected, group_by, int(min_targets))
+    if selected.empty:
+        st.info(f"No players with at least {int(min_targets)} targets in the selection.")
+        return
+    table = game_report.category_table(selected, group_by)
+
+    fig = game_report.build_epa_figure(selected, group_by)
+    # Streamlit's chart theme drops plotly fill patterns, which hides the touchdown boxes.
+    st.plotly_chart(fig, use_container_width=True, theme=None)
+    with st.expander("Table view", expanded=False):
+        st.dataframe(table, use_container_width=True)
+
+
 # ------------------------------------------------------------------------- main
 
 
 def main() -> None:
     st.set_page_config(page_title="Weekly Game Sim Results", layout="wide")
+    view = st.sidebar.radio("View", ["Simulation results", "Game report"], key="results_view")
+    if view == "Game report":
+        render_game_report()
+        return
     st.title("Weekly Game Simulation Results")
 
     default_folder = default_results_folder()
