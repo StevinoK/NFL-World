@@ -52,7 +52,9 @@ CATEGORY_COLORS: Dict[str, str] = {
 }
 TD_PATTERNS = {"none": "", "offense": "/", "defense": "x"}
 GROUP_PLAYER_GAME = "Player per game"
+GROUP_PLAYER_SEASON = "Player per season"
 GROUP_PLAYER = "Player (combined)"
+GROUP_OPTIONS = [GROUP_PLAYER_GAME, GROUP_PLAYER_SEASON, GROUP_PLAYER]
 
 # "pass short left to 18-M.Harrison" / "pass deep right intended for 22-R.Shaheed"
 _TARGET_RE = re.compile(r"(?:\bto|intended for) (\d{1,2})-([^\s(\[]+)")
@@ -239,6 +241,10 @@ def _unit_columns(segments: pd.DataFrame, group_by: str) -> pd.DataFrame:
         seg["unit"] = seg["player_id"].astype(str)
         teams = seg.groupby("unit")["team"].agg(lambda s: "/".join(dict.fromkeys(s)))
         seg["unit_label"] = seg["player_name"] + "<br>" + seg["unit"].map(teams)
+    elif group_by == GROUP_PLAYER_SEASON:
+        seg["unit"] = seg["player_id"].astype(str) + "|" + seg["season"].astype(str)
+        teams = seg.groupby("unit")["team"].agg(lambda s: "/".join(dict.fromkeys(s)))
+        seg["unit_label"] = seg["player_name"] + "<br>" + seg["unit"].map(teams) + " " + seg["season"].astype(str)
     else:
         seg["unit"] = seg["player_id"].astype(str) + "|" + seg["game_id"].astype(str)
         seg["unit_label"] = [

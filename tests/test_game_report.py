@@ -150,6 +150,10 @@ class WeekRangeTest(unittest.TestCase):
         table = gr.category_table(picked, gr.GROUP_PLAYER)
         self.assertEqual(len(table), 1)
         self.assertAlmostEqual(table["Net EPA"].iloc[0], -1.3 * 3)
+        by_season = gr.category_table(picked, gr.GROUP_PLAYER_SEASON)
+        self.assertEqual(sorted(by_season.index), ["T.Kelce · KC 2024", "T.Kelce · KC 2025"])
+        self.assertAlmostEqual(by_season.loc["T.Kelce · KC 2025", "Net EPA"], -1.3 * 2)
+        self.assertEqual(int(by_season.loc["T.Kelce · KC 2025", "Targets"]), 12)
 
 
 class PackingTest(unittest.TestCase):

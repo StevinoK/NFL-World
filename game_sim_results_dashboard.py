@@ -613,8 +613,8 @@ def render_game_report() -> None:
     )
     # Players are compared on season/range totals by default; team games per game.
     group_by = controls[2].radio(
-        "Bars", [game_report.GROUP_PLAYER_GAME, game_report.GROUP_PLAYER], horizontal=True,
-        index=1 if mode == "Players" else 0, key=f"report_group_by_{mode}",
+        "Bars", game_report.GROUP_OPTIONS, horizontal=True,
+        index=game_report.GROUP_OPTIONS.index(game_report.GROUP_PLAYER) if mode == "Players" else 0, key=f"report_group_by_{mode}",
     )
     box_layout = controls[3].radio(
         "Boxes", [game_report.LAYOUT_PACKED, game_report.LAYOUT_STACKED], horizontal=True,
@@ -663,7 +663,8 @@ def render_game_report() -> None:
         if len(week_labels) > 1:
             start_label, end_label = st.select_slider(
                 "Week range", options=week_labels, value=(week_labels[0], week_labels[-1]),
-                key="report_week_range",
+                # Reset to the full range whenever the season selection changes.
+                key="report_week_range_" + "_".join(str(season) for season in sorted(seasons)),
                 help="Each player's bar totals every target in this range.",
             )
         else:
