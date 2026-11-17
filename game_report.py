@@ -13,14 +13,22 @@ Targets (the receiver on a pass play):
 * Incompletion -> play EPA is "Incomplete".
 * Interception -> play EPA is "Interception".
 
-Rushes (the ball carrier on a run or QB scramble; kneel-downs excluded):
+Rushes (the ball carrier on a designed run; kneel-downs excluded):
 
 * Run -> play EPA is "Rush"; if the carrier lost a fumble, it is "Fumble lost".
 
-Either kind of play wiped out by a penalty (``play_type == "no_play"``: DPI,
+QB plays (credited to the quarterback):
+
+* Scramble -> play EPA is "Scramble" ("Fumble lost" if he lost a fumble).
+* Sack -> play EPA is "Sack" ("Fumble lost" if he lost the fumble).
+
+Any of these wiped out by a penalty (``play_type == "no_play"``: DPI,
 offensive holding, ...) -> play EPA is "Penalty". nflverse leaves the player ids
 empty on these plays, so the target or ball carrier is parsed from the play
 description and resolved by jersey number against the same team's plays in that game.
+
+Positions come from nflverse season rosters (``attach_positions``); bars are grouped
+QB, RB, WR, TE, then everyone else.
 
 Two-point attempts are excluded (their EPA is not comparable to scrimmage plays).
 Touchdowns are marked with a pattern: "/" when the offense scored, "x" when the
@@ -43,24 +51,37 @@ PBP_COLUMNS = [
     "epa", "air_epa", "yac_epa", "complete_pass", "incomplete_pass", "interception",
     "penalty", "fumble_lost", "fumbled_1_player_id", "fumbled_2_player_id",
     "receiver_player_id", "receiver_player_name", "rusher_player_id", "rusher_player_name",
-    "qb_kneel", "touchdown", "td_team", "fixed_drive",
+    "qb_kneel", "qb_scramble", "sack", "passer_player_id", "passer_player_name",
+    "touchdown", "td_team", "fixed_drive",
 ]
 
 KIND_TARGET = "Target"
 KIND_RUSH = "Rush"
-KINDS = [KIND_TARGET, KIND_RUSH]
+KIND_SCRAMBLE = "Scramble"
+KIND_SACK = "Sack"
+KINDS = [KIND_TARGET, KIND_RUSH, KIND_SCRAMBLE, KIND_SACK]
+KIND_LABELS = {KIND_TARGET: "Targets", KIND_RUSH: "Rushes", KIND_SCRAMBLE: "Scrambles", KIND_SACK: "Sacks"}
 
 # Fixed band order moving away from the axis (same in every bar), and legend order.
-CATEGORIES = ["Rush", "Reception", "YAC", "Penalty", "Incomplete", "Fumble lost", "Interception"]
+# Colors were checked for adjacent-pair separation (incl. color-vision deficiency) in
+# this order; the neutral Incomplete band separates the two runs of hues.
+CATEGORIES = [
+    "Rush", "Scramble", "Reception", "YAC", "Penalty", "Incomplete", "Sack", "Fumble lost", "Interception",
+]
 CATEGORY_COLORS: Dict[str, str] = {
     "Rush": "#e87ba4",
+    "Scramble": "#008300",
     "Reception": "#2a78d6",
     "YAC": "#1baf7a",
     "Penalty": "#eda100",
     "Incomplete": "#8f8e88",
+    "Sack": "#eb6834",
     "Fumble lost": "#6250d6",
     "Interception": "#e34948",
 }
+
+POSITION_GROUPS = ["QB", "RB", "WR", "TE", "Other"]
+_POSITION_ALIASES = {"HB": "RB", "FB": "RB"}
 TD_PATTERNS = {"none": "", "offense": "/", "defense": "x"}
 GROUP_PLAYER_GAME = "Player per game"
 GROUP_PLAYER_SEASON = "Player per season"
@@ -71,6 +92,9 @@ GROUP_OPTIONS = [GROUP_PLAYER_GAME, GROUP_PLAYER_SEASON, GROUP_PLAYER]
 _TARGET_RE = re.compile(r"(?:\bto|intended for) (\d{1,2})-([^\s(\[]+)")
 # "22-R.Davis up the middle" / "8-M.Mariota scrambles right tackle"
 _RUSH_RE = re.compile(r"(\d{1,2})-([^\s(\[]+) (?:scrambles )?(?:left|right|up the middle)\b")
+# "8-L.Jackson sacked at BUF 28" / "15-P.Mahomes pass short left ..."
+_SACK_RE = re.compile(r"(\d{1,2})-([^\s(\[]+) sacked\b")
+_PASSER_RE = re.compile(r"(\d{1,2})-([^\s(\[]+) (?:pass|sacked|scrambles)\b")
 _PENALTY_SPLIT_RE = re.compile(r"penalty", re.IGNORECASE)
 
 
@@ -100,6 +124,14 @@ def parse_rusher(desc: object) -> Optional[tuple]:
     return _parse_player(desc, _RUSH_RE)
 
 
+def parse_sacked(desc: object) -> Optional[tuple]:
+    return _parse_player(desc, _SACK_RE)
+
+
+def parse_passer(desc: object) -> Optional[tuple]:
+    return _parse_player(desc, _PASSER_RE)
+
+
 def _ensure_columns(pbp: pd.DataFrame) -> pd.DataFrame:
     missing = [c for c in PBP_COLUMNS if c not in pbp.columns]
     if not missing:
@@ -113,6 +145,7 @@ def _jersey_roster(pbp: pd.DataFrame) -> Dict[tuple, tuple]:
     for id_col, name_col, parser in (
         ("receiver_player_id", "receiver_player_name", parse_target),
         ("rusher_player_id", "rusher_player_name", parse_rusher),
+        ("passer_player_id", "passer_player_name", parse_passer),
     ):
         rows = pbp[pbp[id_col].notna()].drop_duplicates(["game_id", "posteam", id_col])
         for game_id, team, desc, pid, name in zip(
@@ -127,20 +160,29 @@ def _jersey_roster(pbp: pd.DataFrame) -> Dict[tuple, tuple]:
 def _attach_nullified_players(pbp: pd.DataFrame) -> pd.DataFrame:
     """Fill receiver/rusher id+name on penalty-nullified plays from the description."""
     roster = _jersey_roster(pbp)
+    # Sacked QB, for live sacks straight from the passer columns.
+    live_sack = _flag(pbp, "sack") & pbp["play_type"].ne("no_play")
+    pbp["sack_player_id"] = pbp["passer_player_id"].where(live_sack)
+    pbp["sack_player_name"] = pbp["passer_player_name"].where(live_sack)
     nullified = (
         pbp["play_type"].eq("no_play") & _flag(pbp, "penalty")
         & pbp["receiver_player_id"].isna() & pbp["rusher_player_id"].isna()
     )
     for idx in pbp.index[nullified]:
         desc = pbp.at[idx, "desc"]
-        is_pass = isinstance(desc, str) and re.search(r"\bpass\b", desc) is not None
-        parsed = parse_target(desc) if is_pass else parse_rusher(desc)
+        text = desc if isinstance(desc, str) else ""
+        before_penalty = _PENALTY_SPLIT_RE.split(text, maxsplit=1)[0]
+        if re.search(r"\bsacked\b", before_penalty):
+            prefix, parsed = "sack", parse_sacked(desc)
+        elif re.search(r"\bpass\b", before_penalty):
+            prefix, parsed = "receiver", parse_target(desc)
+        else:
+            prefix, parsed = "rusher", parse_rusher(desc)
         if parsed is None:
             continue
         jersey, name = parsed
         team = pbp.at[idx, "posteam"]
         pid, pname = roster.get((pbp.at[idx, "game_id"], team, jersey), (f"{team}#{jersey}:{name}", name))
-        prefix = "receiver" if is_pass else "rusher"
         pbp.at[idx, f"{prefix}_player_id"] = pid
         pbp.at[idx, f"{prefix}_player_name"] = pname
     return pbp
@@ -184,19 +226,37 @@ def build_player_segments(pbp: pd.DataFrame, kinds: Sequence[str] = tuple(KINDS)
         # Live target plays with no pass outcome (penalty enforced on the play itself).
         add(plays, KIND_TARGET, live & ~interception & ~complete & ~incomplete, "Penalty", epa)
 
-    if KIND_RUSH in kinds:
+    if KIND_RUSH in kinds or KIND_SCRAMBLE in kinds:
         plays = base[base["rusher_player_id"].notna() & ~_flag(base, "qb_kneel")]
         plays = plays[plays["play_type"].isin(["run", "no_play"])].rename(
             columns={"rusher_player_id": "player_id", "rusher_player_name": "player_name"}
+        )
+        scramble = _flag(plays, "qb_scramble") | plays["desc"].astype(str).str.contains(
+            r"\d-\S+ scrambles\b", regex=True
         )
         pid = plays["player_id"]
         fumbled = (plays["fumbled_1_player_id"] == pid) | (plays["fumbled_2_player_id"] == pid)
         fumble_lost = _flag(plays, "fumble_lost") & fumbled
         nullified = plays["play_type"].eq("no_play")
         epa = plays["epa"]
-        add(plays, KIND_RUSH, nullified, "Penalty", epa)
-        add(plays, KIND_RUSH, ~nullified & fumble_lost, "Fumble lost", epa)
-        add(plays, KIND_RUSH, ~nullified & ~fumble_lost, "Rush", epa)
+        for kind, is_kind, label in ((KIND_RUSH, ~scramble, "Rush"), (KIND_SCRAMBLE, scramble, "Scramble")):
+            if kind in kinds:
+                add(plays, kind, is_kind & nullified, "Penalty", epa)
+                add(plays, kind, is_kind & ~nullified & fumble_lost, "Fumble lost", epa)
+                add(plays, kind, is_kind & ~nullified & ~fumble_lost, label, epa)
+
+    if KIND_SACK in kinds:
+        plays = base[base["sack_player_id"].notna()].rename(
+            columns={"sack_player_id": "player_id", "sack_player_name": "player_name"}
+        )
+        pid = plays["player_id"]
+        fumbled = (plays["fumbled_1_player_id"] == pid) | (plays["fumbled_2_player_id"] == pid)
+        fumble_lost = _flag(plays, "fumble_lost") & fumbled
+        nullified = plays["play_type"].eq("no_play")
+        epa = plays["epa"]
+        add(plays, KIND_SACK, nullified, "Penalty", epa)
+        add(plays, KIND_SACK, ~nullified & fumble_lost, "Fumble lost", epa)
+        add(plays, KIND_SACK, ~nullified & ~fumble_lost, "Sack", epa)
 
     if not parts:
         return pd.DataFrame(columns=SEGMENT_COLUMNS)
@@ -208,7 +268,52 @@ def build_player_segments(pbp: pd.DataFrame, kinds: Sequence[str] = tuple(KINDS)
     seg["week"] = seg["week"].astype(int)
     seg["season"] = seg["season"].astype(int)
     seg["drive"] = seg["fixed_drive"]
+    # Placeholder until attach_positions(): anyone who was sacked or scrambled is a QB.
+    qbs = set(seg.loc[seg["kind"].isin([KIND_SACK, KIND_SCRAMBLE]), "player_id"])
+    seg["position"] = np.where(seg["player_id"].isin(qbs), "QB", "Other")
     return seg[SEGMENT_COLUMNS].reset_index(drop=True)
+
+
+def position_group(position: object) -> str:
+    """Map a roster position to QB / RB / WR / TE / Other."""
+    if not isinstance(position, str) or not position:
+        return "Other"
+    position = _POSITION_ALIASES.get(position.upper(), position.upper())
+    return position if position in POSITION_GROUPS else "Other"
+
+
+def attach_roster(segments: pd.DataFrame, roster: pd.DataFrame) -> pd.DataFrame:
+    """Set position groups from an nflverse season roster and resolve placeholder ids.
+
+    ``roster`` needs ``player_id`` and ``position``; with ``team`` and ``jersey_number``
+    it also maps placeholder ids ("TEAM#jersey:Name", from penalty-only plays) to the
+    real player. Players missing from the roster keep the inferred placeholder
+    position (QB if they were sacked or scrambled, otherwise Other).
+    """
+    if segments.empty or roster is None or roster.empty:
+        return segments
+    seg = segments.copy()
+    if {"team", "jersey_number"} <= set(roster.columns):
+        by_jersey = (
+            roster.dropna(subset=["team", "jersey_number"])
+            .assign(jersey=lambda r: r["jersey_number"].astype(float).astype(int).astype(str))
+            .drop_duplicates(["team", "jersey"])
+            .set_index(["team", "jersey"])["player_id"]
+        )
+        synthetic = seg["player_id"].astype(str).str.extract(r"^([A-Z]+)#(\d+):")
+        keys = list(zip(synthetic[0], synthetic[1]))
+        resolved = pd.Series([by_jersey.get(k) if isinstance(k[0], str) else None for k in keys], index=seg.index)
+        seg["player_id"] = resolved.fillna(seg["player_id"])
+    positions = roster.dropna(subset=["player_id"]).drop_duplicates("player_id").set_index("player_id")["position"]
+    mapped = seg["player_id"].map(positions).map(lambda p: position_group(p) if isinstance(p, str) else None)
+    seg["position"] = mapped.fillna(seg["position"])
+    return seg
+
+
+def attach_positions(segments: pd.DataFrame, roster_positions: Dict[str, str]) -> pd.DataFrame:
+    """Shorthand for ``attach_roster`` with only a {player_id: position} mapping."""
+    roster = pd.DataFrame({"player_id": list(roster_positions), "position": list(roster_positions.values())})
+    return attach_roster(segments, roster)
 
 
 def build_target_segments(pbp: pd.DataFrame) -> pd.DataFrame:
@@ -218,7 +323,7 @@ def build_target_segments(pbp: pd.DataFrame) -> pd.DataFrame:
 
 SEGMENT_COLUMNS = [
     "season", "season_type", "week", "game_id", "play_id", "team", "opponent", "qtr",
-    "time", "desc", "player_id", "player_name", "kind", "category", "epa", "td", "drive",
+    "time", "desc", "player_id", "player_name", "position", "kind", "category", "epa", "td", "drive",
 ]
 
 
@@ -261,9 +366,9 @@ def team_game_catalog(segments: pd.DataFrame) -> pd.DataFrame:
     return cat
 
 
-def _usage(targets: int, rushes: int) -> str:
-    parts = [f"{targets} tgt" if targets else "", f"{rushes} rush" if rushes else ""]
-    return ", ".join(p for p in parts if p)
+def _usage(targets: int, rushes: int, scrambles: int = 0, sacks: int = 0) -> str:
+    parts = [(targets, "tgt"), (rushes, "rush"), (scrambles, "scr"), (sacks, "sk")]
+    return ", ".join(f"{n} {unit}" for n, unit in parts if n)
 
 
 def player_game_catalog(segments: pd.DataFrame) -> pd.DataFrame:
@@ -271,10 +376,11 @@ def player_game_catalog(segments: pd.DataFrame) -> pd.DataFrame:
     plays = segments.drop_duplicates(["game_id", "play_id", "player_id"])
     counts = plays.groupby(["player_id", "game_id", "kind"]).size().unstack("kind")
     counts = counts.reindex(columns=KINDS).fillna(0).astype(int)
-    counts.columns = ["targets", "rushes"]
+    counts.columns = ["targets", "rushes", "scrambles", "sacks"]
     net = segments.groupby(["player_id", "game_id"])["epa"].sum().rename("net_epa")
     base = (
-        segments[["player_id", "player_name", "season", "season_type", "week", "game_id", "team", "opponent"]]
+        segments[["player_id", "player_name", "position", "season", "season_type", "week", "game_id", "team",
+                  "opponent"]]
         .drop_duplicates(["player_id", "game_id"])
         .set_index(["player_id", "game_id"])
         .join(counts)
@@ -285,7 +391,7 @@ def player_game_catalog(segments: pd.DataFrame) -> pd.DataFrame:
     )
     base["label"] = [
         f"{r.player_name} ({r.team}) · {week_label(r.season, r.week, r.season_type)} vs {r.opponent}"
-        f" · {_usage(r.targets, r.rushes)}, {r.net_epa:+.1f} EPA"
+        f" · {_usage(r.targets, r.rushes, r.scrambles, r.sacks)}, {r.net_epa:+.1f} EPA"
         for r in base.itertuples()
     ]
     return base
@@ -311,6 +417,10 @@ def _unit_columns(segments: pd.DataFrame, group_by: str) -> pd.DataFrame:
     # Labels must be unique per unit (two players can share a short name).
     dup = seg.groupby("unit_label")["unit"].transform("nunique") > 1
     seg.loc[dup, "unit_label"] = seg.loc[dup, "unit_label"] + " #" + seg.loc[dup, "player_id"].astype(str).str[-4:]
+    if "position" not in seg:
+        seg["position"] = "Other"
+    # One position group per bar (a player's most frequent group in the selection).
+    seg["unit_position"] = seg.groupby("unit")["position"].transform(lambda s: s.mode().iloc[0])
     return seg
 
 
@@ -332,9 +442,29 @@ def stack_segments(segments: pd.DataFrame, group_by: str = GROUP_PLAYER_GAME) ->
     return seg.drop(columns=["top"]).reset_index(drop=True)
 
 
+def _position_rank(position: str) -> int:
+    return POSITION_GROUPS.index(position) if position in POSITION_GROUPS else len(POSITION_GROUPS)
+
+
 def unit_order(stacked: pd.DataFrame) -> List[str]:
-    net = stacked.groupby("unit_label")["epa"].sum().sort_values(ascending=False)
-    return list(net.index)
+    """Bars grouped by position (QB, RB, WR, TE, Other), best net EPA first within each."""
+    units = stacked.groupby("unit_label").agg(net=("epa", "sum"), position=("unit_position", "first"))
+    units["rank"] = units["position"].map(_position_rank)
+    units = units.sort_values(["rank", "net"], ascending=[True, False])
+    return list(units.index)
+
+
+def position_spans(stacked: pd.DataFrame, order: Sequence[str]) -> List[tuple]:
+    """(position, first_index, last_index) for each contiguous position group in ``order``."""
+    by_label = stacked.groupby("unit_label")["unit_position"].first()
+    spans: List[tuple] = []
+    for i, label in enumerate(order):
+        position = by_label[label]
+        if spans and spans[-1][0] == position:
+            spans[-1] = (position, spans[-1][1], i)
+        else:
+            spans.append((position, i, i))
+    return spans
 
 
 def squarify(areas: Sequence[float], x: float, y: float, w: float, h: float) -> List[tuple]:
@@ -457,7 +587,7 @@ def build_epa_figure(
     top = max(float(ups.max()) if len(ups) else 0.0, 0.5)
     bottom = min(float(downs.min()) if len(downs) else 0.0, -0.5)
     pad = 0.04 * (top - bottom)
-    y_range = [bottom - pad, top + pad]
+    y_range = [bottom - pad, top + 2.5 * pad]  # extra headroom for the position headers
 
     if layout == LAYOUT_PACKED:
         plot_height_px = height - 110 - 110  # minus top legend/title and bottom tick labels
@@ -532,13 +662,28 @@ def build_epa_figure(
 
     net = stacked.assign(play_key=stacked["game_id"].astype(str) + ":" + stacked["play_id"].astype(str)).groupby(
         "unit_label"
-    ).agg(net=("epa", "sum"), player=("player_name", "first"), plays=("play_key", "nunique")).reindex(order)
+    ).agg(net=("epa", "sum"), player=("player_name", "first"), plays=("play_key", "nunique"),
+          position=("unit_position", "first")).reindex(order)
     fig.add_trace(go.Scatter(
         name="Net EPA", x=list(range(len(order))), y=net["net"], mode="markers",
         marker=dict(symbol="diamond", size=10, color="#0b0b0b", line=dict(color="white", width=2)),
-        customdata=np.stack([net["player"], net["plays"]], axis=-1),
-        hovertemplate="<b>%{customdata[0]}</b><br>Net %{y:+.2f} EPA on %{customdata[1]} plays<extra></extra>",
+        customdata=np.stack([net["player"], net["plays"], net["position"]], axis=-1),
+        hovertemplate="<b>%{customdata[0]}</b> (%{customdata[2]})<br>Net %{y:+.2f} EPA on %{customdata[1]} plays<extra></extra>",
     ))
+
+    # Position groups: alternating shaded bands, separators and a header per group.
+    for n, (position, first, last) in enumerate(position_spans(stacked, order)):
+        if n % 2 == 0:
+            fig.add_shape(type="rect", xref="x", yref="paper", x0=first - 0.5, x1=last + 0.5, y0=0, y1=1,
+                          fillcolor="rgba(128,128,128,0.07)", line=dict(width=0), layer="below")
+        if n > 0:
+            fig.add_shape(type="line", xref="x", yref="paper", x0=first - 0.5, x1=first - 0.5, y0=0, y1=1,
+                          line=dict(color="rgba(128,128,128,0.45)", width=1, dash="dot"))
+        count = last - first + 1
+        name = {"Other": "Other"}.get(position, position + ("s" if count > 1 else ""))
+        fig.add_annotation(x=(first + last) / 2, y=1.0, xref="x", yref="paper", yanchor="top",
+                           text=f"<b>{name}</b>", showarrow=False, font=dict(size=13, color="#52514e"),
+                           bgcolor="rgba(255,255,255,0.75)")
 
     y_title = "EPA (box area ∝ EPA)" if layout == LAYOUT_PACKED else "EPA"
     fig.add_hline(y=0, line=dict(color="#52514e", width=1.5))
@@ -572,13 +717,20 @@ def category_table(segments: pd.DataFrame, group_by: str = GROUP_PLAYER_GAME) ->
     plays = seg.drop_duplicates(["unit", "game_id", "play_id"])
     counts = plays.groupby(["unit_label", "kind"]).size().unstack("kind").reindex(columns=KINDS).fillna(0)
     tds = plays[plays["td"] == "offense"].groupby("unit_label").size()
-    table.insert(0, "Targets", counts[KIND_TARGET].reindex(table.index).fillna(0).astype(int))
-    table.insert(1, "Rushes", counts[KIND_RUSH].reindex(table.index).fillna(0).astype(int))
+    position = seg.groupby("unit_label")["unit_position"].first()
+    table.insert(0, "Pos", position.reindex(table.index))
+    for n, kind in enumerate(KINDS, start=1):
+        table.insert(n, KIND_LABELS[kind], counts[kind].reindex(table.index).fillna(0).astype(int))
+    # Hide play-type columns that are all zero (e.g. no QBs in the selection).
+    empty = [KIND_LABELS[k] for k in KINDS if k != KIND_TARGET and not table[KIND_LABELS[k]].any()]
+    table = table.drop(columns=empty)
     table["TDs"] = tds.reindex(table.index).fillna(0).astype(int)
     table["Net EPA"] = table[[c for c in CATEGORIES if c in table.columns]].sum(axis=1)
     table.index.name = "Player"
     table.columns.name = None
-    return table.sort_values("Net EPA", ascending=False).round(2)
+    table["_rank"] = table["Pos"].map(_position_rank)
+    table = table.sort_values(["_rank", "Net EPA"], ascending=[True, False]).drop(columns="_rank")
+    return table.round(2)
 
 
 def filter_min_plays(segments: pd.DataFrame, group_by: str, min_plays: int) -> pd.DataFrame:

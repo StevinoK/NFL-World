@@ -147,6 +147,88 @@ class RushingTest(unittest.TestCase):
         self.assertIn("1 tgt, 4 rush", catalog["label"].iloc[0])
 
 
+def qb_pbp() -> pd.DataFrame:
+    def qb(play_id: int, **kw) -> dict:
+        row = play(play_id, receiver_player_id=None, receiver_player_name=None, passer_player_id="QB1",
+                   passer_player_name="P.Mahomes", sack=0.0, qb_scramble=0.0)
+        row.update(kw)
+        return row
+
+    return pd.DataFrame([
+        qb(201, desc="15-P.Mahomes sacked at KC 25 for -8 yards (99-X.Y).", sack=1.0, epa=-1.6),
+        qb(202, desc="15-P.Mahomes sacked at KC 20 for -6 yards. FUMBLES, RECOVERED by BUF", sack=1.0,
+           epa=-4.0, fumble_lost=1.0, fumbled_1_player_id="QB1"),
+        qb(203, desc="15-P.Mahomes scrambles left end to BUF 30 for 9 yards", play_type="run", qb_scramble=1.0,
+           rusher_player_id="QB1", rusher_player_name="P.Mahomes", passer_player_id=None, epa=0.9),
+        qb(204, desc="15-P.Mahomes sacked at KC 30 for -5 yards. PENALTY on BUF-24-A.B, Defensive Holding, "
+                     "5 yards - No Play.", play_type="no_play", penalty=1.0, epa=0.6, passer_player_id=None,
+           passer_player_name=None),
+        qb(205, desc="15-P.Mahomes scrambles up the middle for 12 yards. PENALTY on KC-70-A.B, Holding - No Play.",
+           play_type="no_play", penalty=1.0, epa=-0.7, passer_player_id=None, passer_player_name=None),
+        # A plain pass is not a QB segment (its EPA belongs to the target).
+        qb(206, desc="15-P.Mahomes pass short left to 87-T.Kelce for 5 yards", complete_pass=1.0, epa=0.4,
+           air_epa=0.1, yac_epa=0.3, receiver_player_id="P1", receiver_player_name="T.Kelce"),
+    ])
+
+
+class QuarterbackTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.segments = gr.build_player_segments(qb_pbp())
+
+    def test_sacks_and_scrambles(self) -> None:
+        qb = self.segments[self.segments["player_id"] == "QB1"]
+        got = {(r.play_id, r.kind, r.category): round(r.epa, 6) for r in qb.itertuples()}
+        self.assertEqual(got, {
+            (201, gr.KIND_SACK, "Sack"): -1.6,
+            (202, gr.KIND_SACK, "Fumble lost"): -4.0,
+            (203, gr.KIND_SCRAMBLE, "Scramble"): 0.9,
+            (204, gr.KIND_SACK, "Penalty"): 0.6,
+            (205, gr.KIND_SCRAMBLE, "Penalty"): -0.7,
+        })
+        self.assertEqual(set(qb["position"]), {"QB"})  # inferred without a roster
+        self.assertEqual(self.segments.loc[self.segments["play_id"] == 206, "player_id"].tolist(), ["P1", "P1"])
+
+    def test_kind_filter(self) -> None:
+        only_targets = gr.build_player_segments(qb_pbp(), kinds=(gr.KIND_TARGET,))
+        self.assertEqual(set(only_targets["play_id"]), {206})
+
+
+class PositionTest(unittest.TestCase):
+    def setUp(self) -> None:
+        pbp = pd.concat([sample_pbp(), rushing_pbp(), qb_pbp()], ignore_index=True)
+        roster = pd.DataFrame({
+            "player_id": ["P1", "R1", "QB1", "Z9"],
+            "position": ["TE", "RB", "QB", "WR"],
+            "team": ["KC", "KC", "KC", "KC"],
+            "jersey_number": [87, 10, 15, 11],
+        })
+        self.segments = gr.attach_roster(gr.build_player_segments(pbp), roster)
+
+    def test_roster_positions_and_placeholder_resolution(self) -> None:
+        positions = self.segments.drop_duplicates("player_id").set_index("player_id")["position"].to_dict()
+        self.assertEqual(positions["P1"], "TE")
+        self.assertEqual(positions["R1"], "RB")
+        self.assertEqual(positions["QB1"], "QB")
+        # Penalty-only "I.Pacheco" (#10) from sample_pbp resolves to roster player R1.
+        self.assertFalse(self.segments["player_id"].astype(str).str.contains("#").any())
+
+    def test_bars_grouped_by_position(self) -> None:
+        stacked = gr.stack_segments(self.segments, gr.GROUP_PLAYER)
+        order = gr.unit_order(stacked)
+        spans = gr.position_spans(stacked, order)
+        self.assertEqual([s[0] for s in spans], ["QB", "RB", "TE"])
+        table = gr.category_table(self.segments, gr.GROUP_PLAYER)
+        self.assertEqual(table["Pos"].tolist(), ["QB", "RB", "TE"])
+        self.assertTrue({"Scrambles", "Sacks", "Sack", "Scramble"} <= set(table.columns))
+        fig = gr.build_epa_figure(self.segments, gr.GROUP_PLAYER)
+        headers = [a.text for a in fig.layout.annotations]
+        self.assertEqual(headers, ["<b>QB</b>", "<b>RB</b>", "<b>TE</b>"])
+
+    def test_position_group_aliases(self) -> None:
+        self.assertEqual([gr.position_group(p) for p in ["FB", "hb", "WR", "OL", None]],
+                         ["RB", "RB", "WR", "Other", "Other"])
+
+
 class StackingTest(unittest.TestCase):
     def test_boxes_stack_away_from_zero_without_overlap(self) -> None:
         segments = gr.build_target_segments(sample_pbp())

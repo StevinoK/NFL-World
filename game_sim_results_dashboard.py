@@ -600,7 +600,19 @@ def load_pbp(season: int) -> pd.DataFrame:
 
 @st.cache_data(show_spinner=False, ttl=3600)
 def load_player_segments(season: int) -> pd.DataFrame:
-    return game_report.build_player_segments(load_pbp(season))
+    segments = game_report.build_player_segments(load_pbp(season))
+    return game_report.attach_roster(segments, load_roster(season))
+
+
+@st.cache_data(show_spinner=False, ttl=3600)
+def load_roster(season: int) -> pd.DataFrame:
+    """Season roster (player_id, position, team, jersey_number); empty if unavailable."""
+    try:
+        roster = nfl.import_seasonal_rosters([season])
+    except Exception:
+        return pd.DataFrame(columns=["player_id", "position", "team", "jersey_number"])
+    keep = [c for c in ("player_id", "position", "team", "jersey_number") if c in roster.columns]
+    return roster[keep]
 
 
 @st.cache_data(show_spinner=False)
@@ -649,7 +661,7 @@ def render_drive_filter(
         st.session_state[key] = [d for d in st.session_state[key] if d in options]
     chosen = st.multiselect(
         "Drives", options, format_func=labels.get, key=key, placeholder="All drives",
-        help="Filters the receiving/rushing chart; leave empty for all drives. Click or box-select "
+        help="Filters the player EPA chart; leave empty for all drives. Click or box-select "
              "bars in the drive chart (double-click to clear), or pick here.",
     )
     if not chosen:
@@ -696,7 +708,7 @@ def render_single_game(pbp: pd.DataFrame, segments: pd.DataFrame) -> Optional[pd
     with st.expander("Drive table", expanded=False):
         st.dataframe(game_flow.drive_table(drives), use_container_width=True)
 
-    st.subheader("Receiving & rushing")
+    st.subheader("Player EPA")
     selected = segments[segments["game_id"] == game_id]
     return render_drive_filter(selected, game_id, drives, event)
 
@@ -704,8 +716,8 @@ def render_single_game(pbp: pd.DataFrame, segments: pd.DataFrame) -> Optional[pd
 def render_game_report() -> None:
     st.header("Game report")
     st.caption(
-        "Each box is one target or carry (completions split into air and YAC); in the packed layout a "
-        "box's area is its EPA. Boxes above the line added EPA, boxes below cost EPA, and outcome "
+        "Each box is one target, carry, scramble or sack (completions split into air and YAC); bars are "
+        "grouped by position (QB, RB, WR, TE). In the packed layout a box's area is its EPA. Boxes above the line added EPA, boxes below cost EPA, and outcome "
         "colors keep the same order away from the line in every bar. Hatched boxes are touchdowns "
         "(/ = offense scored, x = defensive return TD). The diamond is the player's net EPA."
     )
@@ -717,9 +729,8 @@ def render_game_report() -> None:
     mode = controls[1].radio(
         "Select by", ["Single game", "Team games", "Players"], horizontal=True, key="report_mode"
     )
-    kind_labels = {game_report.KIND_TARGET: "Targets", game_report.KIND_RUSH: "Rushes"}
     kinds = controls[2].multiselect(
-        "Include", game_report.KINDS, default=game_report.KINDS, format_func=kind_labels.get,
+        "Include", game_report.KINDS, default=game_report.KINDS, format_func=game_report.KIND_LABELS.get,
         key="report_kinds",
     )
     controls = st.columns([3, 2, 1])
@@ -734,7 +745,7 @@ def render_game_report() -> None:
     )
     min_plays = controls[2].number_input(
         "Min plays", min_value=1, value=1, step=1, key="report_min_plays",
-        help="Minimum targets + carries for a bar to be shown.",
+        help="Minimum plays (targets, carries, scrambles and sacks) for a bar to be shown.",
     )
     if not seasons or not kinds:
         st.info("Select at least one season and one play type.")
@@ -780,11 +791,15 @@ def render_game_report() -> None:
         players = (
             catalog.groupby("player_id")
             .agg(player_name=("player_name", "first"), teams=("team", lambda s: "/".join(dict.fromkeys(s))),
-                 touches=("targets", "sum"), rushes=("rushes", "sum"))
-            .assign(touches=lambda d: d["touches"] + d["rushes"])
+                 position=("position", lambda s: s.mode().iloc[0]),
+                 touches=("targets", "sum"), rushes=("rushes", "sum"),
+                 scrambles=("scrambles", "sum"), sacks=("sacks", "sum"))
+            .assign(touches=lambda d: d["touches"] + d["rushes"] + d["scrambles"] + d["sacks"])
             .sort_values("touches", ascending=False)
         )
-        player_labels = {pid: f"{r.player_name} ({r.teams})" for pid, r in players.iterrows()}
+        player_labels = {
+            pid: f"{r.player_name} ({r.teams} {r.position})" for pid, r in players.iterrows()
+        }
         chosen_players = st.multiselect(
             "Players", list(player_labels), format_func=player_labels.get, key="report_players",
         )
