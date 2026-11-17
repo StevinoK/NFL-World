@@ -590,45 +590,54 @@ def current_nfl_season(today: Optional[pd.Timestamp] = None) -> int:
 
 
 @st.cache_data(show_spinner="Loading play-by-play...", ttl=3600)
-def load_target_segments(season: int) -> pd.DataFrame:
+def load_player_segments(season: int) -> pd.DataFrame:
     pbp = nfl.import_pbp_data([season], columns=game_report.PBP_COLUMNS, downcast=True, cache=False)
-    return game_report.build_target_segments(pbp)
+    return game_report.build_player_segments(pbp)
 
 
 def render_game_report() -> None:
-    st.header("Game report: target EPA by outcome")
+    st.header("Game report: player EPA by outcome")
     st.caption(
-        "Each box is one target's EPA (completions split into air and YAC); in the packed layout a "
-        "box's area is its EPA. Boxes above the line added EPA, boxes below cost EPA. Hatched boxes "
-        "are touchdowns (/ = offense scored, "
-        "x = defensive return TD). The diamond is the player's net EPA."
+        "Each box is one target or carry (completions split into air and YAC); in the packed layout a "
+        "box's area is its EPA. Boxes above the line added EPA, boxes below cost EPA, and outcome "
+        "colors keep the same order away from the line in every bar. Hatched boxes are touchdowns "
+        "(/ = offense scored, x = defensive return TD). The diamond is the player's net EPA."
     )
     latest = current_nfl_season()
-    controls = st.columns([2, 2, 2, 2, 1])
+    controls = st.columns([2, 2, 2])
     seasons = controls[0].multiselect(
         "Seasons", list(range(latest, 1998, -1)), default=[latest], key="report_seasons"
     )
     mode = controls[1].radio(
         "Select by", ["Team games", "Players"], horizontal=True, key="report_mode"
     )
+    kind_labels = {game_report.KIND_TARGET: "Targets", game_report.KIND_RUSH: "Rushes"}
+    kinds = controls[2].multiselect(
+        "Include", game_report.KINDS, default=game_report.KINDS, format_func=kind_labels.get,
+        key="report_kinds",
+    )
+    controls = st.columns([3, 2, 1])
     # Players are compared on season/range totals by default; team games per game.
-    group_by = controls[2].radio(
+    group_by = controls[0].radio(
         "Bars", game_report.GROUP_OPTIONS, horizontal=True,
         index=game_report.GROUP_OPTIONS.index(game_report.GROUP_PLAYER) if mode == "Players" else 0, key=f"report_group_by_{mode}",
     )
-    box_layout = controls[3].radio(
+    box_layout = controls[1].radio(
         "Boxes", [game_report.LAYOUT_PACKED, game_report.LAYOUT_STACKED], horizontal=True,
         key="report_layout",
     )
-    min_targets = controls[4].number_input("Min targets", min_value=1, value=1, step=1, key="report_min_tgt")
-    if not seasons:
-        st.info("Select at least one season.")
+    min_plays = controls[2].number_input(
+        "Min plays", min_value=1, value=1, step=1, key="report_min_plays",
+        help="Minimum targets + carries for a bar to be shown.",
+    )
+    if not seasons or not kinds:
+        st.info("Select at least one season and one play type.")
         return
 
     frames = []
     for season in sorted(seasons):
         try:
-            frames.append(load_target_segments(int(season)))
+            frames.append(load_player_segments(int(season)))
         except Exception as error:  # season not published yet, network issue, ...
             st.warning(f"Could not load {season} play-by-play: {error}")
     frames = [f for f in frames if not f.empty]
@@ -636,13 +645,17 @@ def render_game_report() -> None:
         st.info("No completed games found for the selected seasons.")
         return
     segments = pd.concat(frames, ignore_index=True)
+    segments = segments[segments["kind"].isin(kinds)]
+    if segments.empty:
+        st.info("No plays of the selected types.")
+        return
 
     if mode == "Team games":
         catalog = game_report.team_game_catalog(segments)
         labels = catalog["label"].tolist()
         chosen = st.multiselect(
             "Team games (offense)", labels, default=labels[:1], key="report_team_games",
-            help="Pick any mix of teams and weeks; each team's targets in that game are shown.",
+            help="Pick any mix of teams and weeks; each team's targets and carries in that game are shown.",
         )
         picked = catalog[catalog["label"].isin(chosen)]
         selected = game_report.select_team_games(segments, picked[["game_id", "team"]].values)
@@ -651,8 +664,9 @@ def render_game_report() -> None:
         players = (
             catalog.groupby("player_id")
             .agg(player_name=("player_name", "first"), teams=("team", lambda s: "/".join(dict.fromkeys(s))),
-                 targets=("targets", "sum"))
-            .sort_values("targets", ascending=False)
+                 touches=("targets", "sum"), rushes=("rushes", "sum"))
+            .assign(touches=lambda d: d["touches"] + d["rushes"])
+            .sort_values("touches", ascending=False)
         )
         player_labels = {pid: f"{r.player_name} ({r.teams})" for pid, r in players.iterrows()}
         chosen_players = st.multiselect(
@@ -665,7 +679,7 @@ def render_game_report() -> None:
                 "Week range", options=week_labels, value=(week_labels[0], week_labels[-1]),
                 # Reset to the full range whenever the season selection changes.
                 key="report_week_range_" + "_".join(str(season) for season in sorted(seasons)),
-                help="Each player's bar totals every target in this range.",
+                help="Each player's bar totals every target and carry in this range.",
             )
         else:
             start_label = end_label = week_labels[0]
@@ -683,9 +697,9 @@ def render_game_report() -> None:
         st.info("Pick at least one team game or player game to draw the report.")
         return
 
-    selected = game_report.filter_min_targets(selected, group_by, int(min_targets))
+    selected = game_report.filter_min_plays(selected, group_by, int(min_plays))
     if selected.empty:
-        st.info(f"No players with at least {int(min_targets)} targets in the selection.")
+        st.info(f"No players with at least {int(min_plays)} plays in the selection.")
         return
     table = game_report.category_table(selected, group_by)
 

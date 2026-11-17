@@ -90,6 +90,63 @@ class BuildSegmentsTest(unittest.TestCase):
         self.assertEqual(td[1], "none")
 
 
+def rush(play_id: int, **overrides) -> dict:
+    row = play(play_id, play_type="run", receiver_player_id=None, receiver_player_name=None,
+               rusher_player_id="R1", rusher_player_name="I.Pacheco", qb_kneel=0.0)
+    row.update(overrides)
+    return row
+
+
+def rushing_pbp() -> pd.DataFrame:
+    return pd.DataFrame([
+        rush(101, desc="10-I.Pacheco up the middle to BUF 40 for 6 yards", epa=0.4),
+        rush(102, desc="10-I.Pacheco left end for 12 yards, TOUCHDOWN", epa=2.1,
+             touchdown=1.0, td_team="KC"),
+        rush(103, desc="10-I.Pacheco right tackle to KC 30 for 2 yards. FUMBLES, RECOVERED by BUF",
+             epa=-3.5, fumble_lost=1.0, fumbled_1_player_id="R1"),
+        rush(104, desc="10-I.Pacheco left guard for 15 yards. PENALTY on KC-70-A.B, Offensive Holding, "
+                       "10 yards - No Play.", play_type="no_play", epa=-0.8, penalty=1.0,
+             rusher_player_id=None, rusher_player_name=None),
+        rush(105, desc="15-P.Mahomes kneels to KC 30 for -1 yards.", play_type="qb_kneel", epa=-0.2,
+             qb_kneel=1.0, rusher_player_id="QB", rusher_player_name="P.Mahomes"),
+        play(106, desc="15-P.Mahomes pass short right to 10-I.Pacheco to BUF 30 for 4 yards",
+             epa=0.3, air_epa=-0.2, yac_epa=0.5, complete_pass=1.0,
+             receiver_player_id="R1", receiver_player_name="I.Pacheco"),
+    ])
+
+
+class RushingTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.segments = gr.build_player_segments(rushing_pbp())
+
+    def test_rush_categories(self) -> None:
+        by_play = {pid: dict(zip(g["category"], g["epa"].round(6))) for pid, g in self.segments.groupby("play_id")}
+        self.assertEqual(by_play[101], {"Rush": 0.4})
+        self.assertEqual(by_play[102], {"Rush": 2.1})
+        self.assertEqual(by_play[103], {"Fumble lost": -3.5})
+        self.assertEqual(by_play[104], {"Penalty": -0.8})
+        self.assertNotIn(105, by_play)  # kneel-downs excluded
+
+    def test_nullified_run_resolves_carrier_and_kinds(self) -> None:
+        rows = self.segments[self.segments["play_id"] == 104]
+        self.assertEqual(rows["player_id"].tolist(), ["R1"])
+        self.assertEqual(rows["kind"].tolist(), [gr.KIND_RUSH])
+        kinds = self.segments.drop_duplicates("play_id").groupby("kind").size().to_dict()
+        self.assertEqual(kinds, {gr.KIND_RUSH: 4, gr.KIND_TARGET: 1})
+
+    def test_targets_only_builder_skips_rushes(self) -> None:
+        targets = gr.build_target_segments(rushing_pbp())
+        self.assertEqual(set(targets["play_id"]), {106})
+
+    def test_table_counts_targets_and_rushes(self) -> None:
+        table = gr.category_table(self.segments, gr.GROUP_PLAYER)
+        row = table.iloc[0]
+        self.assertEqual((int(row["Targets"]), int(row["Rushes"]), int(row["TDs"])), (1, 4, 1))
+        self.assertAlmostEqual(row["Net EPA"], 0.4 + 2.1 - 3.5 - 0.8 + 0.3)
+        catalog = gr.player_game_catalog(self.segments)
+        self.assertIn("1 tgt, 4 rush", catalog["label"].iloc[0])
+
+
 class StackingTest(unittest.TestCase):
     def test_boxes_stack_away_from_zero_without_overlap(self) -> None:
         segments = gr.build_target_segments(sample_pbp())
@@ -180,6 +237,21 @@ class PackingTest(unittest.TestCase):
         self.assertTrue((packed["x1"] <= positions + gr.SLOT_WIDTH / 2 + 1e-9).all())
         self.assertTrue((packed.loc[packed["positive"], "y0"] >= -1e-9).all())
         self.assertTrue((packed.loc[~packed["positive"], "y1"] <= 1e-9).all())
+
+    def test_packed_bands_follow_fixed_category_order(self) -> None:
+        frames = [sample_pbp(), rushing_pbp()]
+        segments = gr.build_player_segments(pd.concat(frames, ignore_index=True))
+        stacked = gr.stack_segments(segments, gr.GROUP_PLAYER_GAME)
+        packed = gr.pack_segments(stacked, gr.unit_order(stacked), px_per_x=100.0, px_per_y=30.0)
+        rank = {c: i for i, c in enumerate(gr.CATEGORIES)}
+        for (_, positive), strip in packed.groupby(["unit", "positive"]):
+            # Distance of each category band from the axis must increase with CATEGORIES order.
+            near = strip.assign(d=strip["y0"].abs() if positive else strip["y1"].abs())
+            bands = near.groupby("category")["d"].min().sort_values()
+            ranks = [rank[c] for c in bands.index]
+            self.assertEqual(ranks, sorted(ranks))
+            full_width = strip.groupby("category").apply(lambda g: g["x1"].max() - g["x0"].min())
+            np.testing.assert_allclose(full_width.to_numpy(), gr.SLOT_WIDTH)
 
     def test_both_layouts_build(self) -> None:
         segments = gr.build_target_segments(sample_pbp())
