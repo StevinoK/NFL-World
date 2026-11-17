@@ -1,0 +1,22 @@
+# Tested runtime family: Python 3.9 on Windows.
+altair
+greenlet==3.2.5
+joblib
+matplotlib
+modal==1.5.5
+nfl-data-py
+numpy
+pandas
+plotly
+requests
+scikit-learn==1.6.1
+scipy
+streamlit==1.50.0
+streamlit-sortables
+torch==2.8.0
+
+# Additional packages required by Torch Modeling.py (training pipeline)
+seaborn
+skorch
+coral-pytorch
+optuna

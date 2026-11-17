@@ -1,0 +1,30 @@
+{
+  "elapsed_seconds": 465.92,
+  "rows_before": 8523,
+  "rows_after": 8569,
+  "season_weeks": 175,
+  "starter_mean_before": -0.07299307237524885,
+  "starter_mean_after": 0.042154873971756227,
+  "2025_member_k": [
+    3,
+    7,
+    6,
+    5,
+    5,
+    8,
+    3,
+    7,
+    4,
+    3,
+    6,
+    8,
+    7,
+    7,
+    7,
+    7,
+    6,
+    3,
+    8,
+    5
+  ]
+}

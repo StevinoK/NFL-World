@@ -1,0 +1,152 @@
+{
+  "DB": {
+    "evaluation_rows": 25508,
+    "evaluation_seasons": [
+      2019,
+      2020,
+      2021,
+      2022,
+      2023,
+      2024,
+      2025
+    ],
+    "history_decay": 0.8,
+    "mse": 0.21242332484100312,
+    "mse_original_method": 0.21278781720440534,
+    "pipeline_refit_gain_vs_original": 0.0017,
+    "prior_model": "zero",
+    "prior_snaps": 1600.0
+  },
+  "DL": {
+    "evaluation_rows": 25551,
+    "evaluation_seasons": [
+      2019,
+      2020,
+      2021,
+      2022,
+      2023,
+      2024,
+      2025
+    ],
+    "history_decay": 0.8,
+    "mse": 0.018749019473952362,
+    "mse_original_method": 0.01884840641619115,
+    "pipeline_refit_gain_vs_original": 0.0053,
+    "prior_model": "regression",
+    "prior_snaps": 800.0
+  },
+  "LB": {
+    "evaluation_rows": 18027,
+    "evaluation_seasons": [
+      2019,
+      2020,
+      2021,
+      2022,
+      2023,
+      2024,
+      2025
+    ],
+    "history_decay": 0.8,
+    "mse": 0.11892098885575592,
+    "mse_original_method": 0.12054037229970851,
+    "pipeline_refit_gain_vs_original": 0.0134,
+    "prior_model": "zero",
+    "prior_snaps": 1600.0
+  },
+  "OL": {
+    "evaluation_rows": 19112,
+    "evaluation_seasons": [
+      2019,
+      2020,
+      2021,
+      2022,
+      2023,
+      2024,
+      2025
+    ],
+    "history_decay": 0.8,
+    "madden_features": true,
+    "mse": 0.9828765820113152,
+    "mse_original_method": 0.9869948718380986,
+    "note": "Madden pass/run blocking, OVR, strength and awareness added to the box profile (only OL improved; DL/LB/DB did not).",
+    "pipeline_refit_gain_vs_original": 0.0035,
+    "prior_model": "regression",
+    "prior_snaps": 400.0
+  },
+  "QB": {
+    "evaluation_rows": 4520,
+    "evaluation_seasons": [
+      2019,
+      2020,
+      2021,
+      2022,
+      2023,
+      2024,
+      2025,
+      2026
+    ],
+    "history_decay": 0.8,
+    "mse": 0.018825550431090205,
+    "mse_original_method": 0.018883572703214894,
+    "pipeline_refit_gain_vs_original": 0.0054,
+    "prior_model": "regression",
+    "prior_snaps": 200.0
+  },
+  "RB": {
+    "evaluation_rows": 7748,
+    "evaluation_seasons": [
+      2019,
+      2020,
+      2021,
+      2022,
+      2023,
+      2024,
+      2025,
+      2026
+    ],
+    "history_decay": 0.8,
+    "mse": 0.023106698299014235,
+    "mse_original_method": 0.0232701332420011,
+    "note": "Grid optimum lost 1.12% MSE on a real pipeline refit (prior shrinkage also changes with T); kept the original method.",
+    "prior_model": "decay",
+    "prior_snaps": 200.0
+  },
+  "TE": {
+    "evaluation_rows": 3353,
+    "evaluation_seasons": [
+      2019,
+      2020,
+      2021,
+      2022,
+      2023,
+      2024,
+      2025,
+      2026
+    ],
+    "history_decay": 0.8,
+    "mse": 0.17736727478006362,
+    "mse_original_method": 0.17783159555422767,
+    "note": "Grid optimum lost 0.06% MSE on a real pipeline refit (prior shrinkage also changes with T); kept the original method.",
+    "prior_model": "decay",
+    "prior_snaps": 200.0
+  },
+  "WR": {
+    "evaluation_rows": 8786,
+    "evaluation_seasons": [
+      2019,
+      2020,
+      2021,
+      2022,
+      2023,
+      2024,
+      2025,
+      2026
+    ],
+    "history_decay": 0.8,
+    "mse": 0.07933814665006585,
+    "mse_original_method": 0.08047981638004009,
+    "pipeline_refit_gain_vs_original": 0.0136,
+    "prior_model": "regression",
+    "prior_snaps": 400.0
+  }
+}

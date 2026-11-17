@@ -2,11 +2,19 @@
   "version": "0.2.0",
   "configurations": [
     {
-      "name": "Streamlit: Feature Dashboard",
-      "type": "python",
+      "name": "Sim dashboard",
+      "type": "debugpy",
       "request": "launch",
-      "program": "${workspaceFolder}/run_feature_dashboard.py",
-      "console": "integratedTerminal",
+      "module": "nflsim.dashboard.run",
+      "cwd": "${workspaceFolder}",
+      "justMyCode": true
+    },
+    {
+      "name": "Player value weekly update",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "player_value.plus_minus",
+      "python": "${workspaceFolder}\\NFL_PM.venv\\Scripts\\python.exe",
       "cwd": "${workspaceFolder}",
       "justMyCode": true
     }

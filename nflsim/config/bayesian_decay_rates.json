@@ -1,0 +1,254 @@
+{
+  "decay_rates": {
+    "CORNER_bayes": {
+      "decay": 0.96,
+      "season_carryover": 0.99
+    },
+    "CROSS_bayes": {
+      "decay": 0.92,
+      "season_carryover": 0.81
+    },
+    "CURL_bayes": {
+      "decay": 0.91,
+      "season_carryover": 0.71
+    },
+    "DIG_bayes": {
+      "decay": 0.95,
+      "season_carryover": 0.93
+    },
+    "FLAT_bayes": {
+      "decay": 0.95,
+      "season_carryover": 0.71
+    },
+    "GO_bayes": {
+      "decay": 0.94,
+      "season_carryover": 0.71
+    },
+    "HITCH_bayes": {
+      "decay": 0.91,
+      "season_carryover": 0.71
+    },
+    "OUT_bayes": {
+      "decay": 0.94,
+      "season_carryover": 0.71
+    },
+    "POST_bayes": {
+      "decay": 0.96,
+      "season_carryover": 0.91
+    },
+    "QUICK OUT_bayes": {
+      "decay": 0.92,
+      "season_carryover": 0.71
+    },
+    "SCREEN_bayes": {
+      "decay": 0.95,
+      "season_carryover": 0.75
+    },
+    "SLANT_bayes": {
+      "decay": 0.95,
+      "season_carryover": 0.91
+    },
+    "SWING_bayes": {
+      "decay": 0.94,
+      "season_carryover": 0.71
+    },
+    "WHEEL_bayes": {
+      "decay": 0.97,
+      "season_carryover": 0.99
+    },
+    "adot": {
+      "decay": 0.97,
+      "season_carryover": 0.91
+    },
+    "close_bayes": {
+      "decay": 0.99,
+      "season_carryover": 0.99
+    },
+    "cpoe_bayes": {
+      "decay": 0.96,
+      "season_carryover": 0.95
+    },
+    "cpoe_deep": {
+      "decay": 0.99,
+      "season_carryover": 0.94
+    },
+    "cpoe_medium": {
+      "decay": 0.98,
+      "season_carryover": 0.99
+    },
+    "cpoe_short": {
+      "decay": 0.99,
+      "season_carryover": 0.91
+    },
+    "deep": {
+      "decay": 0.58,
+      "season_carryover": 0.71
+    },
+    "deep_cpoe_allowed": {
+      "decay": 0.98,
+      "season_carryover": 0.99
+    },
+    "deep_pass_rate": {
+      "decay": 0.96,
+      "season_carryover": 0.98
+    },
+    "def_losing_rate": {
+      "decay": 0.97,
+      "season_carryover": 0.91
+    },
+    "def_pass_epa_rate": {
+      "decay": 0.96,
+      "season_carryover": 0.91
+    },
+    "def_rush_epa_rate": {
+      "decay": 0.99,
+      "season_carryover": 0.91
+    },
+    "def_tied_rate": {
+      "decay": 0.99,
+      "season_carryover": 0.94
+    },
+    "def_winning_rate": {
+      "decay": 0.99,
+      "season_carryover": 0.99
+    },
+    "epa_rate": {
+      "decay": 0.95,
+      "season_carryover": 0.71
+    },
+    "explosive_bayes": {
+      "decay": 0.5,
+      "season_carryover": 0.71
+    },
+    "fd_bayes": {
+      "decay": 0.97,
+      "season_carryover": 0.99
+    },
+    "int_rate": {
+      "decay": 0.99,
+      "season_carryover": 0.91
+    },
+    "losing_rate": {
+      "decay": 0.96,
+      "season_carryover": 0.71
+    },
+    "medium": {
+      "decay": 0.5,
+      "season_carryover": 0.71
+    },
+    "medium_cpoe_allowed": {
+      "decay": 0.98,
+      "season_carryover": 0.93
+    },
+    "medium_pass_rate": {
+      "decay": 0.9,
+      "season_carryover": 0.71
+    },
+    "opp_def_pass_epa_rate": {
+      "decay": 0.96,
+      "season_carryover": 0.91
+    },
+    "opp_def_rush_epa_rate": {
+      "decay": 0.99,
+      "season_carryover": 0.91
+    },
+    "opp_pass_epa_rate": {
+      "decay": 0.95,
+      "season_carryover": 0.71
+    },
+    "opp_rushing_epa_rate": {
+      "decay": 0.98,
+      "season_carryover": 0.91
+    },
+    "pace_of_play_bayes": {
+      "decay": 0.91,
+      "season_carryover": 0.86
+    },
+    "pass_oe": {
+      "decay": 0.82,
+      "season_carryover": 0.71
+    },
+    "qb_dome_rate_bayes": {
+      "decay": 0.97,
+      "season_carryover": 0.91
+    },
+    "qb_scramble_ypc_bayes": {
+      "decay": 0.98,
+      "season_carryover": 0.99
+    },
+    "rush_rate": {
+      "decay": 0.91,
+      "season_carryover": 0.91
+    },
+    "rush_yards_per_carry": {
+      "decay": 0.97,
+      "season_carryover": 0.91
+    },
+    "rushing_epa_rate": {
+      "decay": 0.98,
+      "season_carryover": 0.91
+    },
+    "rz_bayes": {
+      "decay": 0.96,
+      "season_carryover": 0.99
+    },
+    "sack_bayes": {
+      "decay": 0.98,
+      "season_carryover": 0.91
+    },
+    "sack_rate": {
+      "decay": 0.98,
+      "season_carryover": 0.95
+    },
+    "scramble_rate": {
+      "decay": 0.99,
+      "season_carryover": 0.91
+    },
+    "short": {
+      "decay": 0.5,
+      "season_carryover": 0.71
+    },
+    "short_cpoe_allowed": {
+      "decay": 0.99,
+      "season_carryover": 0.99
+    },
+    "short_pass_rate": {
+      "decay": 0.89,
+      "season_carryover": 0.71
+    },
+    "team_4th_rate": {
+      "decay": 0.95,
+      "season_carryover": 0.99
+    },
+    "tied_rate": {
+      "decay": 0.92,
+      "season_carryover": 0.71
+    },
+    "turnover_bayes": {
+      "decay": 0.91,
+      "season_carryover": 0.71
+    },
+    "winning_rate": {
+      "decay": 0.95,
+      "season_carryover": 0.71
+    },
+    "yac_bayes": {
+      "decay": 0.98,
+      "season_carryover": 0.91
+    },
+    "yac_oe_allowed": {
+      "decay": 0.99,
+      "season_carryover": 0.91
+    },
+    "ypc_bayes": {
+      "decay": 0.97,
+      "season_carryover": 0.91
+    },
+    "ypt": {
+      "decay": 0.98,
+      "season_carryover": 0.91
+    }
+  },
+  "note": "Research baselines only (rolling_comparison, historical_bakeoff, ridge.bakeoff). No production model input reads this file, including metrics listed here. See input_sources.csv in a bundle for how each input is built.",
+  "updated_from": "bayesian_feature_builder.py"
+}

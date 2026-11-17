@@ -1,0 +1,78 @@
+{
+  "017e130d7cb36bbbc4562436a99dd5f2eb184389ab1cb8f65e33f5f35169c2a3": {
+    "detail": "Rebuilt through 2025 with over-expectation targets, refreshed for 2026. Before the input cleanup.",
+    "name": "Rebuilt models"
+  },
+  "0f8b7fb92b45f882468ef32158340ecc7bca036dda344f50c2c696aefcfcbcd3": {
+    "detail": "Rebuilt through 2025 with over-expectation targets, refreshed for 2026. Before the input cleanup.",
+    "name": "Rebuilt models"
+  },
+  "35d1065353f7352a2a1f9993382cc3eaf06796fd9b7ed3c3215d2cb3334af7b2": {
+    "detail": "Forecast-trained models with rain term, retrained without the inputs that did not help on held-out games.",
+    "name": "Pruned inputs"
+  },
+  "49f6542746b0370c1473f473403a27d77821f09afff25451c842551a6dc1e7d0": {
+    "detail": "Forecast-trained models with rain term; each play model drops inputs whose shuffle cost under 1 standard error on held-out games.",
+    "name": "Pruned inputs, 1 SE rule"
+  },
+  "7854affc0b19ac45036d4197ee86cfd6a28d96408c41e8dcecbc9bbd557a825f": {
+    "detail": "Very noisy QB inputs dropped from the models, refreshed for 2026.",
+    "name": "Noisy inputs dropped"
+  },
+  "92c0f64988d2865401d6585e7ebbcc41eca86306b9c38f5f9a33dbe272386ba1": {
+    "detail": "Yardage models treat plays stopped by the goal line as 'at least this far'. One training seed. Refreshed for 2026.",
+    "name": "Goal-line models"
+  },
+  "96d9a031ea202c7005b2ff8458b6f7e84c6454c6df614a20c7991721e23a2107": {
+    "detail": "Completion and interception models train on actual throws, not sacks or scrambles. Refreshed for 2026.",
+    "name": "Throws-only models"
+  },
+  "a71108b549fa0c7965995c7259ad5f67541361ec8a0ab532f28bc8c02850c409": {
+    "detail": "Goal-line models plus ten models averaged over ten training seeds, which steadies team ratings. Refreshed for 2026.",
+    "name": "Seed-averaged models"
+  },
+  "e7ffa1071c8b3b4154dbcf07afe311b4feab2862740ee8e67fdd8c6c1d84c57d": {
+    "detail": "Forecast-trained models with rain term; each play model drops inputs whose shuffle cost under 1 game-clustered standard error on held-out games, yardage models scored by CRPS with goal-line censoring.",
+    "name": "Pruned inputs, CRPS-scored"
+  },
+  "fb64baf18e7c810627ed17209ecc3c03fdfd76708d07dd408f4ad7b6b08028e3": {
+    "detail": "Trained on archived forecasts. One rain strength per play model; the networks predict a dry game.",
+    "name": "Forecast-trained models with rain term"
+  },
+  "ffec726a7bf32a389f3e7dc61346fdba89558695ced553947626116399570a12": {
+    "detail": "Trained on archived forecasts. One rain strength per play model; the networks predict a dry game.",
+    "name": "Forecast-trained models with rain term"
+  },
+  "pv-attempts-20261105": {
+    "detail": "Packaged before the weekly refresh, so it cannot simulate upcoming games.",
+    "name": "Throws-only models (not refreshed)"
+  },
+  "pv-forecast-rain-20261106": {
+    "detail": "Trained on archived forecasts. One rain strength per play model; the networks predict a dry game.",
+    "name": "Forecast-trained models with rain term"
+  },
+  "pv-goal-20261105": {
+    "detail": "Packaged before the weekly refresh, so it cannot simulate upcoming games.",
+    "name": "Goal-line models (not refreshed)"
+  },
+  "pv-nodeep-20261104": {
+    "detail": "Packaged before the weekly refresh, so it cannot simulate upcoming games.",
+    "name": "Noisy inputs dropped (not refreshed)"
+  },
+  "pv-pruned-20261110": {
+    "detail": "Forecast-trained models with rain term, retrained without the inputs that did not help on held-out games.",
+    "name": "Pruned inputs"
+  },
+  "pv-seedavg-20261105": {
+    "detail": "Packaged before the weekly refresh, so it cannot simulate upcoming games.",
+    "name": "Seed-averaged models (not refreshed)"
+  },
+  "pv-z1crps-20261112": {
+    "detail": "Forecast-trained models with rain term; each play model drops inputs whose shuffle cost under 1 game-clustered standard error on held-out games, yardage models scored by CRPS with goal-line censoring.",
+    "name": "Pruned inputs, CRPS-scored"
+  },
+  "pv-z1se-20261111": {
+    "detail": "Forecast-trained models with rain term; each play model drops inputs whose shuffle cost under 1 standard error on held-out games.",
+    "name": "Pruned inputs, 1 SE rule"
+  }
+}

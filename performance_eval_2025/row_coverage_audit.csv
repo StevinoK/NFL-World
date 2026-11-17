@@ -1,5 +1,0 @@
-dataset,expected_rows,observed_rows,missing_rows,expected_games,observed_games,missing_games,details
-results,64,64,0,64,64,0,baseline
-attempt_diagnostics,1280,1280,0,64,64,0,one row per game per simulation
-team_calibration,128,128,0,64,64,0,two rows per game (home/away)
-team_draws,2560,2560,0,64,64,0,two team rows per game per simulation
