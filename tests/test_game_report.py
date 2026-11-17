@@ -188,6 +188,36 @@ class QuarterbackTest(unittest.TestCase):
         self.assertEqual(set(qb["position"]), {"QB"})  # inferred without a roster
         self.assertEqual(self.segments.loc[self.segments["play_id"] == 206, "player_id"].tolist(), ["P1", "P1"])
 
+    def test_untargeted_passes_credit_the_passer(self) -> None:
+        def qb(play_id: int, **kw) -> dict:
+            row = play(play_id, receiver_player_id=None, receiver_player_name=None, passer_player_id="QB1",
+                       passer_player_name="P.Mahomes", sack=0.0, qb_scramble=0.0)
+            row.update(kw)
+            return row
+
+        pbp = pd.concat([qb_pbp(), pd.DataFrame([
+            qb(301, desc="15-P.Mahomes pass incomplete short right.", incomplete_pass=1.0, epa=-0.5),
+            qb(302, desc="15-P.Mahomes spiked the ball to stop the clock.", play_type="qb_spike",
+               incomplete_pass=1.0, epa=-0.3),
+            qb(303, desc="15-P.Mahomes pass incomplete short left. PENALTY on KC-15-P.Mahomes, "
+                         "Intentional Grounding, 10 yards", incomplete_pass=1.0, penalty=1.0, epa=-1.9),
+            qb(304, desc="15-P.Mahomes pass deep middle INTERCEPTED by 21-X.Y at KC 40.", interception=1.0,
+               epa=-3.8),
+            qb(305, desc="15-P.Mahomes pass incomplete deep right. PENALTY on BUF-24-A.B, Defensive Holding, "
+                         "5 yards - No Play.", play_type="no_play", penalty=1.0, epa=0.9, passer_player_id=None,
+               passer_player_name=None),
+        ])], ignore_index=True)
+        seg = gr.build_player_segments(pbp)
+        untargeted = seg[seg["kind"] == gr.KIND_UNTARGETED]
+        got = {(r.play_id, r.category): round(r.epa, 6) for r in untargeted.itertuples()}
+        self.assertEqual(got, {
+            (301, "Incomplete"): -0.5, (302, "Incomplete"): -0.3, (303, "Penalty"): -1.9,
+            (304, "Interception"): -3.8, (305, "Penalty"): 0.9,
+        })
+        self.assertEqual(set(untargeted["player_id"]), {"QB1"})
+        # Sacks and targeted passes are not double-counted as untargeted.
+        self.assertFalse(set(untargeted["play_id"]) & {201, 202, 206})
+
     def test_kind_filter(self) -> None:
         only_targets = gr.build_player_segments(qb_pbp(), kinds=(gr.KIND_TARGET,))
         self.assertEqual(set(only_targets["play_id"]), {206})
