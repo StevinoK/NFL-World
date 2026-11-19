@@ -341,13 +341,26 @@ What this says:
   and screens set air yards at or behind the line. Test FTN screen rate (offense) on the `ay` model; NGS adds
   little elsewhere (completion −0.10%, z −1.4).
 - **A location stage.** Knowing the actual pass location or run gap improves completion, YAC and rush yards a
-  lot. In simulation, though, the sim would draw the location from its own model, and if both models are right
-  the stage only redistributes the same outcomes. The real gain is the *matchup*: teams' strength at the drawn
-  location. That pays off for runs (−0.23%, z −3.1) and not passes. A run-direction stage is worth building:
-  - draw inside/outside and left/middle/right from the offense's tendencies and the situation;
-  - then draw yards with offense and defense rush ratings for that direction.
+  lot. But that is an oracle: before the snap the sim must draw the location from its own model. In theory a
+  correct one-step model already equals the two-step mixture (Σ_l P(l | x) P(y | l, x) = P(y | x)), so a stage
+  adds nothing. In practice it does, because the one-step model doesn't learn the interactions the stage writes
+  down. `exp_location_stage.py` measures it on held-out 2025-26 rushes (19,909), scoring the two-step model's
+  full mixture over drawn locations:
 
-  A pass-location stage is not.
+  | Rush yards model | Log loss | vs A | z |
+  | --- | --- | --- | --- |
+  | A one-step, base inputs | 2.2935 | | |
+  | B one-step + direction ratings and offense tendencies as plain inputs | 2.2925 | −0.04% | −0.5 |
+  | C two-step: drawn location, then yards with offense/defense ratings at that location | 2.2881 | **−0.24%** | **−4.4** |
+  | D two-step: drawn location, no location ratings | 2.2909 | −0.11% | −2.2 |
+  | O oracle: actual location | 2.2807 | −0.56% | −6.8 |
+
+  The drawn-location stage keeps about 40% of the oracle's gain, even though the location model barely beats
+  league frequencies (log loss 1.851 vs 1.881). It clearly beats giving the same information as plain inputs
+  (B). Most of its gain comes with the matchup ratings (C vs D). So build the run-direction stage. For passes,
+  the matched-rating test given the actual location showed nothing (completion −0.01%, YAC +0.02%), so a
+  pass-location stage is lower priority, though D suggests the structure alone can help. That is untested for
+  passes.
 
 Recommendations:
 
