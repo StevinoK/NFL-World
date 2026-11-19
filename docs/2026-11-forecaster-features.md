@@ -246,27 +246,59 @@ What this says, across both tables:
 - This fits an open item in the October review: the sim's yards are calibrated but its **points per 100 yards
   are not** (dispersion 1.24-1.32). Field position and scoring-range trips are exactly how yards turn into points.
 
-Recommendations:
+### As inputs to the simulator's per-play models
 
-1. **Check team-level field position in the sim first.** Compare each team's simulated mean drive start EP and
-   red-zone trips per drive with actual values over the backtest. The October review found the special-teams
-   inputs carry little signal (4.8% skill for punt distance, about 0 for kickoffs). If simulated teams vary too
-   little in drive start, opponent-adjusted drive-start ratings for punts and kickoffs (kicking team allowed,
-   receiving team gained) are better inputs to the `kickoff`, `punt_distance` and `punt_return` models than the
-   current shrunk league deviations.
-2. **Add ridge targets for points per drive and drive start EP** (team scope, offense and defense), and feed them
-   as team context to the `play`, `rush`, `target` and `time` models, alongside `epa_rate`. EDP is a
-   lower-priority third input: it adds a little on totals beyond points per drive, and building it needs its
-   own walk-forward score-expectation model. Fitting points per
-   drive over a field-position expectation, like the existing over-expectation targets, keeps the two parts
-   separate.
-3. **Add points per drive and drive start EP to `joint_outcomes`** as calibration statistics next to points per
-   100 yards.
-4. Skip red-zone TD rate as an input; it is noise at the team level.
+The tables above rate teams; the simulator needs per-play inputs. `exp_play_features.py` asks the question
+directly. It mirrors the sim's per-play models on nflverse data: play call, rush yards, sack, completion,
+interception, air yards, YAC, punt net yards and kickoff start, with binned targets as the CORN models use.
+It compares a LightGBM model on the situation plus EPA-style team ratings with the same model plus offense and
+defense ratings of the drive metrics:
 
-Caveat: the baseline here is raw EPA per play. Our models see a richer set (first downs, explosive rushes, CPOE,
-success-related targets, special-teams deviations), so the gain on top of the production inputs will be smaller
-than shown and needs the usual refit and backtest.
+- **Situation:** down, distance, yardline, half and game seconds, score, quarter, timeouts, home and weather.
+- **Baseline team ratings:** pass EPA, rush EPA, success, sack rate, plays and pass rate, offense and defense.
+- **How ratings enter:** opponent-adjusted, refit weekly on earlier games, and attached as the offense's and
+  the defense's ratings, as the sim feeds team columns. League mean removed each week.
+- **Split:** train 2018-24, test 2025-26. Kickoffs train through 2025 and test 2026, because the 2025 rule has
+  no earlier examples.
+
+Change in held-out log loss (negative = better), with z clustered by game:
+
+| Model (test rows) | PPD + points/play | Drive start EP | Red-zone trips | EDP | All drive features |
+| --- | --- | --- | --- | --- | --- |
+| Play call (55,990) | +0.10% (1.8) | +0.03% | +0.03% | +0.02% | +0.03% |
+| Rush yards (20,052) | +0.10% (1.7) | +0.05% | 0.00% | +0.03% | −0.04% |
+| Sack (30,348) | −0.04% | +0.16% | −0.06% | −0.01% | −0.08% |
+| Completion (26,798) | −0.01% | +0.07% | +0.06% | +0.05% | +0.10% (1.5) |
+| Interception (26,798) | +0.12% | +0.25% | +0.33% | −0.04% | +0.41% |
+| Air yards (26,798) | +0.12% (**2.4**) | −0.01% | +0.08% | +0.06% | +0.09% |
+| YAC (17,270) | +0.04% | −0.09% | +0.03% | −0.05% | 0.00% |
+| Punt net yards (3,075) | −0.39% (−1.4) | −0.48% (−1.6) | −0.15% | −0.02% | −0.18% |
+| Kickoff start, 2026 (1,537) | −0.67% (−1.4) | −0.71% (−1.2) | −0.55% (−1.4) | −0.29% | −1.44% (**−2.4**) |
+
+**For the scrimmage models these features add nothing.** Every change is within ±0.4%, almost all within noise,
+and the one significant change (air yards) is worse. Once a play knows its down, distance and yardline, and
+the teams' EPA-style ratings, drive efficiency says nothing more about that play. The special-teams models
+lean slightly positive, but the samples are small. On kickoffs, red-zone trips help about as much as
+drive-start position, which points to generic team strength rather than field-position skill. Call that
+inconclusive.
+
+So the game-level gain above does not come through per-play inputs. It has to come from how the sim's plays
+compound into drives: field position after punts, kickoffs and turnovers, and how often drives reach scoring
+range. That makes these metrics **calibration targets** for the sim rather than model inputs.
+
+Recommendations (these replace the earlier suggestion to feed drive ratings to the play models):
+
+1. **Add per-team drive statistics to `joint_outcomes`:** points per drive, drive start EP (after punts and
+   after kickoffs separately), and red-zone trips per drive, as calibration statistics next to points per 100
+   yards. Score both levels and dispersion: do simulated teams *differ* as much as real ones?
+2. **If simulated drive starts vary too little between teams, fix it in the special-teams models.** The
+   October review found their team inputs carry little signal (4.8% skill for punt distance, about 0 for
+   kickoffs). Opponent-adjusted punt and kickoff ratings (kicking team allowed, receiving team gained) are worth
+   a refit-and-backtest test, as the slightly positive punt and kickoff results suggest. Test them over more
+   seasons than here, for example leave-one-season-out on 2018-25.
+3. **Don't add points per drive, points per play, red-zone trips or EDP to the scrimmage models** (`play`,
+   `rush`, `comp`, `int`, `ay`, `yac`, `sack`).
+4. Red-zone TD rate is noise at the team level (week-to-week correlation 0.07).
 
 ## Not from the forecasters, but found while looking: referee crews
 
@@ -283,7 +315,8 @@ and, slightly, the totals.
 | 1 | Era / league-environment inputs | All play models (nflfastR uses era dummies in every model) |
 | 1 | Half seconds, quarter, both timeouts, `receive_2h_ko` | `play`, `time`, 4th-down and two-point decisions |
 | 2 | `Diff_Time_Ratio`, strength × time decay | `play`, `time`, decision models |
-| 1 | Points per drive and drive start EP ratings (field position) | Ridge targets as team context for `play`, `rush`, `target`, `time`; drive-start ratings for the special-teams models; sim calibration checks |
+| 1 | Points per drive, drive start EP, red-zone trips per drive | Calibration checks in `joint_outcomes`, not per-play inputs (no gain in the scrimmage models) |
+| 2 | Opponent-adjusted punt and kickoff field-position ratings | `punt_distance`, `punt_return`, `kickoff`, if the calibration check shows too little spread between teams |
 | 2 | Referee crew penalty rate | Penalty models |
 | 2 | `distance_to_sticks`, `air_is_zero` | `comp`, `int`, `yac` |
 | 3 | Market-informed preseason prior (optional) | Ridge preseason start, if market dependence is acceptable |
