@@ -124,16 +124,16 @@ half**, and there are 0.47 end-of-half FG attempts per game.
 Out-of-bounds is the largest single clock input, but the sim doesn't produce it. The rush and YAC models would
 need an out-of-bounds output (or a small classifier after the yardage draw) for the clock model to use it.
 
-### 5. Validate forward in time, and backtest on more games
+### 5. Validate forward in time
 
 - `train.holdout_games` holds out a random fifth of games **within** the training seasons, and the
   validation split is also random by game. Early stopping and model choice therefore never see drift (rule
   changes, 4th-down trends, longer FG range: 50+ yard attempts per team-game went from 0.30 in 2017 to 0.55 in
   2026). Keep the shared fifth for fitting game effects, but choose models and stop training on a later
   season (for example, train ≤ S−1, validate S).
-- The backtests cover about 100 games, so most changes land inside ±0.01 Brier. For model selection, also
-  train a bundle through 2023 and backtest all of 2024 and 2025 (about 540 games). That roughly halves the
-  standard errors, and `bundle.trained_through` already guards against leakage.
+- The backtests cover about 100 games, so most changes land inside ±0.01 Brier. The backtest size stays as
+  it is (decided November 2026), so lean on per-model held-out log loss from the forward split to choose
+  changes, and read backtest differences with their paired intervals.
 
 ### 6. Give the kick model the kicker and the weather
 
@@ -160,9 +160,8 @@ trunk.
   logits, so fit the temperature with the effects integrated out, using the same Laplace machinery.
 - **Seed averaging.** `models/seed_average.py` exists. Extend it to the volume models (play, target, rusher,
   time), where seed noise moves team-level totals.
-- **Market blend (optional, product decision).** Sim Brier is 0.0023 behind Vegas. A logistic stack of the
-  sim's margin and the market spread, fit on past weeks, would likely beat both. It makes the sim depend on
-  the market, so keep it as a separate output if it is wanted at all.
+- **Market blend: not pursued.** Sim Brier is 0.0023 behind Vegas, and a stack with the market spread would
+  likely beat both, but the sim stays independent of the market (decided November 2026).
 
 ## League environment by season (regular season)
 
@@ -190,5 +189,5 @@ From `drift_and_rules.py`. Home/away correlation is of raw final scores.
    and timeouts as inputs (item 4). Both need a refit; do them in one refit.
 3. Two-point tries, safeties, onside kicks and timeouts (item 3). These are simulator changes plus three small
    models.
-4. Forward validation and the larger 2024-25 backtest (item 5), before judging items 2-3.
+4. Forward validation (item 5), before judging items 2-3.
 5. Kick model inputs, temperature scaling and seed averaging (items 6-7).

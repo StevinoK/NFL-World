@@ -8,13 +8,13 @@ tests used public play-by-play with LightGBM stand-ins, not our networks.
 
 | Step | Why |
 | --- | --- |
-| Train a bundle through 2023 and backtest all of 2024 and 2025 (about 540 games, paired by game) | About 100-game backtests resolve only ±0.01 Brier, and most changes here are smaller |
 | Use a forward split for early stopping and model choice (train ≤ S−1, validate S); keep the shared crc32 fifth only for fitting game effects | The random-by-game holdout never sees drift (rule changes, 4th-down trends) |
 | Record the live bundle's simulated spread and total SD | The strength-uncertainty gap below compares SDs from an older bundle with live errors |
 | Add per-team drive statistics to `joint_outcomes`: points per drive, drive start EP after punts and after kickoffs, red-zone trips per drive (level and spread across teams) | Calibration targets; drive metrics don't help as per-play inputs but explain points beyond EPA |
 
-Every item below is scored on the same yardstick: per-model held-out log loss (forward split), then paired
-backtest metrics (win Brier and log loss, spread and total CRPS, spread and total SD with mean squared z,
+Every item below is scored on the same yardstick: per-model held-out log loss (forward split), then the
+existing paired backtest (current size; about 100 games resolve only ±0.01 Brier, so read its differences
+with their intervals). Backtest metrics: (win Brier and log loss, spread and total CRPS, spread and total SD with mean squared z,
 home/away score correlation, `joint_outcomes` dispersions and correlation gaps).
 
 ## 1. No retraining (sim and bundle changes only)
@@ -43,7 +43,7 @@ Look for: margin key numbers, late-game comeback rates, score SD and home/away c
 | Era / league-environment features (pregame league 4th-down go rate over expected, FG make rate by distance band, pass rate) | All play models | 4th-down decision +10-12%, kick +1%, play call +0.7% (nflfastR uses era dummies in every model) |
 | Half seconds remaining, quarter, both timeouts, `receive_2h_ko`, `Diff_Time_Ratio` | `play`, `time`, the new 4th-down/2-pt decisions | Play call +1.25% (with era), clock +1.35% |
 | Kicker make rate over expected (shrunk, strictly prior), wind, cold | `kick` | FG +1.15% with era |
-| Referee crew penalty rate (shrunk, strictly prior) | The four penalty models | Game penalty MSE −3.3% |
+| Referee crew penalty rate (shrunk, strictly prior), **only if** the weekly refresh can pull the midweek assignment list (Football Zebras or Pro Football Network); nflverse fills `referee` only after games. Unannounced crews get the league-average value | The four penalty models | Game penalty MSE −3.3% |
 | `distance_to_sticks`, `air_is_zero` | `comp`, `int`, `yac` | From nflfastR's CP/xYAC; cheap |
 | FTN screen rate and play-action rate (offense) | `ay`, against the existing depth inputs (`adot`, deep/medium/short shares) | FTN family −0.29% on air yards, likely mostly overlapping existing inputs |
 | **Run-direction stage**: a new model for run location and gap (offense tendencies, situation), then `rush` with offense/defense rush ratings for the drawn direction | new location model + `rush` | Rush yards −0.24% (z −4.4) with a drawn location; the same information as plain inputs gave −0.04% |
@@ -59,7 +59,6 @@ remove inputs), refit `game_effects` on the held-out games, package, then backte
 | --- | --- |
 | Temperature scaling | One scalar per network on held-out games, with game effects integrated out; check reliability plots |
 | Seed averaging | `models/seed_average.py` on the volume models (`play`, `target`, `rusher`, `time`) |
-| Market blend (optional, product decision) | Logistic stack of sim margin and market spread on past weeks, kept as a separate output |
 
 ## Tested and dropped (don't rerun)
 
@@ -71,3 +70,8 @@ remove inputs), refit `game_effects` on the held-out games, package, then backte
 - Next Gen Stats player tracking: helps only air yards, likely overlapping existing inputs.
 - Red-zone TD rate: week-to-week correlation 0.07.
 - Drawn pass-location stage: gives back the oracle's completion gain.
+
+## Decided against
+
+- A larger backtest (training through 2023 to backtest 2024-25): the backtest stays at its current size.
+- Blending the sim with the market line.

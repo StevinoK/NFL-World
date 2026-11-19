@@ -395,6 +395,13 @@ penalties per game). None of the forecasters above use it. The sim's four penalt
 state and team features only, so a `referee_penalty_rate` input is cheap and should help the penalty volume
 and, slightly, the totals.
 
+**Use it only with a pregame source.** nflverse's `games.csv` fills `referee` only after a game is played: on
+November 19, 2026, none of week 11's games, including that night's, had one. The league releases each week's
+crew assignments midweek, and Football Zebras and Pro Football Network publish them. So the input works for
+forecasts only if the weekly refresh pulls that assignment list. Training can use the after-the-fact column,
+since it names the same crews. A game without an announced crew should get the neutral value (league
+average), never a guess.
+
 ## Summary: what to add
 
 | Priority | Feature | Where |
@@ -404,7 +411,7 @@ and, slightly, the totals.
 | 2 | `Diff_Time_Ratio`, strength × time decay | `play`, `time`, decision models |
 | 1 | Points per drive, drive start EP, red-zone trips per drive | Calibration checks in `joint_outcomes`, not per-play inputs (no gain in the scrimmage models) |
 | 2 | Opponent-adjusted punt and kickoff field-position ratings | `punt_distance`, `punt_return`, `kickoff`, if the calibration check shows too little spread between teams |
-| 2 | Referee crew penalty rate | Penalty models |
+| 2 | Referee crew penalty rate, only if the weekly refresh pulls the midweek assignment list | Penalty models |
 | 2 | Run-direction stage with offense/defense rush ratings by direction | `rush` (new location model before it) |
 | 3 | FTN screen and play-action rates | `ay`, tested against the existing depth inputs |
 | 2 | `distance_to_sticks`, `air_is_zero` | `comp`, `int`, `yac` |
