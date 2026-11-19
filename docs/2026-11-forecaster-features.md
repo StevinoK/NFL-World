@@ -124,11 +124,25 @@ work already pursues.
 ## Drive efficiency: points per drive (Silver Bulletin) and expected drive points (Fortgang)
 
 Silver Bulletin's ELWAY projects points per play and plays per game for each team and simulates drives (the
-2025 league average was about 2.1 points per drive). Judah Fortgang's *Drive Quality* / *Earned Drive Points*
-rates drives on expected points rather than on whether they scored. Its write-up could not be read from the
-analysis environment; the search excerpt describes a component built on "the average score probability on a
-drive relative to its starting expected points". The versions tested here are approximations built from that
-description, not Fortgang's formula.
+2025 league average was about 2.1 points per drive). Judah Fortgang's *Earned Drive Points* (EDP; "Introducing
+Earned Drive Points (and our Drive Quality model)", SportfolioKings, June 2023) rates drives without their
+outcomes. It has two layers:
+
+1. **A team-aware score expectation per play.** It is an XGBoost model with the EP model's situation inputs
+   plus rolling short- and long-term offense and defense strength (yards per play, success, explosive plays,
+   sack rate, among others).
+2. **EDP from four drive components:**
+   - scoring expectation gained over the drive;
+   - the volatility of those gains (big swings get "nicked");
+   - the average expectation over the drive relative to its start;
+   - a yards-per-play term that removes penalty yardage.
+
+The article reports week-over-week stability more than twice EPA/play's, 3-week vs next-3-week stability of
+0.47 (EPA 0.29, success 0.31), and a 0.27 correlation with the next three weeks' points (EPA 0.21). It does not
+publish its weights.
+
+The first table below compares simpler drive measures. The rebuild of EDP from the article's description
+follows in its own subsection.
 
 **Test (`exp_drive_metrics.py`).** Each metric becomes an opponent-adjusted, recency-weighted ridge rating for
 offense and defense, refit each week on earlier games. A team's points are then predicted, leave one season out
@@ -143,7 +157,7 @@ each week's league mean, so the 2024-25 kickoff rule changes can't pose as team 
 | + success rate | 9.595 | 13.446 | +0.0 |
 | + points per play (ELWAY-style) | **9.524** | **13.278** | **−4.4** |
 | + points per drive (Silver Bulletin) | 9.534 | 13.302 | −4.0 |
-| + expected drive points, mean EP including the start | 9.533 | 13.285 | −3.9 |
+| + mean EP over the drive, including the start (simple proxy) | 9.533 | 13.285 | −3.9 |
 | + EP gained within drives (mean EP − start EP) | 9.594 | 13.443 | −0.3 |
 | + points per drive over starting EP | 9.569 | 13.402 | −2.5 |
 | + drive start EP (field position) | 9.542 | 13.301 | −3.6 |
@@ -160,11 +174,68 @@ How stable each rating is (correlation with the next game's value of the same me
 drive 0.33, EP gained within drives 0.29, drive start EP 0.51, start EP after punts 0.34, red-zone trips per drive
 0.29, red-zone TD rate 0.07, takeaway-started drives 0.12.
 
-What this says:
+### Earned Drive Points, rebuilt from the article
+
+`exp_edp.py` follows the article's recipe on nflverse data:
+
+- **Score expectation.** LightGBM on the EP situation plus rolling, strictly prior offense and defense yards
+  per play, success, explosive and sack rates over the last 3 and 16 games. The target is the drive's points.
+  It is walk-forward: each season is scored by a model fit on earlier seasons.
+- **Gain.** The expectation before the drive's last snap minus the expectation at its first snap. The last
+  play's own result is left out, which reproduces the article's examples: a fumble at the 5 keeps the credit
+  for reaching it, and a one-play 80-yard TD earns little.
+- **The other three components.** Volatility is the SD of snap-to-snap changes, average-relative is the mean
+  expectation minus the start, and clean YPP excludes penalties.
+- **Weights.** Fit by regressing drive points on the components (plus the starting expectation), on earlier
+  seasons only.
+
+The rebuilt EDP correlates 0.77 with a drive's actual points.
+
+**Stability (`exp_edp_stability.py`, offense, raw team-game values, 2017-26).** These match the article:
+
+| Metric | Game → next game | 3 games → next 3 | 3 games → next 3 games' PPD | Season → next | Season → next PPD |
+| --- | --- | --- | --- | --- | --- |
+| EPA/play | 0.17 | 0.35 | 0.34 | 0.41 | 0.41 |
+| Success rate | 0.18 | 0.39 | 0.34 | 0.40 | 0.39 |
+| Points per drive | 0.16 | 0.35 | 0.35 | 0.42 | 0.42 |
+| EDP (rebuilt) | **0.26** | **0.47** | 0.32 | **0.45** | 0.37 |
+| EDP's starting expectation alone | 0.31 | 0.50 | 0.26 | 0.49 | 0.30 |
+
+EDP is the most stable metric, as the article says (its 0.47 and our 0.47 agree). It does not predict future
+points better, though. Much of the stability is built in: the score expectation takes rolling team strength as
+input, so consecutive games share inputs. The starting expectation, which is almost entirely those inputs, is
+the most stable piece and the weakest predictor. Stability alone is the wrong yardstick for a feature.
+
+**Held-out points test (`exp_drive_metrics_edp.py`).** This is the same design as above, with test seasons
+2018-26 (4,554 team-games) so the rebuilt EDP has a season of history:
+
+| Added to EPA/play + plays (both sides) | Team pts RMSE | Margin RMSE | Total RMSE | z |
+| --- | --- | --- | --- | --- |
+| Baseline | 9.541 | 13.372 | 13.613 | |
+| EDP, rebuilt | 9.501 | 13.310 | 13.563 | −2.7 |
+| EDP's components, weighted by the held-out regression | 9.500 | 13.321 | 13.548 | −2.4 |
+| EDP's components without the starting expectation | 9.507 | 13.342 | 13.546 | −2.2 |
+| Volatility component only | 9.540 | 13.359 | 13.621 | −0.3 |
+| Points per drive | 9.481 | 13.232 | 13.582 | −3.7 |
+| Points per play | **9.469** | **13.206** | 13.574 | **−4.2** |
+| Drive start EP | 9.495 | 13.232 | 13.621 | −3.1 |
+| Points per drive + EDP | 9.470 | 13.234 | 13.550 | −3.9 |
+| Points per drive + drive start EP + EDP | 9.466 | 13.229 | **13.543** | −4.0 |
+
+Rebuilt EDP adds real information over EPA/play, but less than points per drive or points per play. On top of
+points per drive it helps totals (13.58 → 13.55) and not margins. Its team-aware gain and clean-YPP terms carry
+something that EPA misses. The volatility penalty carries nothing.
+
+The article weights its components to describe a drive. Fitting the weights to predict *future* points
+instead, for example by regressing next-three-game points per drive on rolling component averages, might
+narrow the gap; this rebuild doesn't test that. Since the exact weights and model aren't public, the rebuild
+may also understate the original.
+
+What this says, across both tables:
 
 - **Drive efficiency carries information EPA per play misses**, worth about 0.15-0.17 points of margin RMSE.
   It survives both teams being in the baseline and removing league-wide trends. Points per play, points per
-  drive and expected drive points carry largely the same signal: combining them adds little over the best one.
+  drive and the mean-EP proxy carry largely the same signal: combining them adds little over the best one.
 - **Where the gain comes from.** Field position (where a team's drives start after punts and kickoffs), and
   reaching the red zone per drive.
 - **Where it doesn't come from.**
@@ -184,7 +255,9 @@ Recommendations:
    receiving team gained) are better inputs to the `kickoff`, `punt_distance` and `punt_return` models than the
    current shrunk league deviations.
 2. **Add ridge targets for points per drive and drive start EP** (team scope, offense and defense), and feed them
-   as team context to the `play`, `rush`, `target` and `time` models, alongside `epa_rate`. Fitting points per
+   as team context to the `play`, `rush`, `target` and `time` models, alongside `epa_rate`. EDP is a
+   lower-priority third input: it adds a little on totals beyond points per drive, and building it needs its
+   own walk-forward score-expectation model. Fitting points per
    drive over a field-position expectation, like the existing over-expectation targets, keeps the two parts
    separate.
 3. **Add points per drive and drive start EP to `joint_outcomes`** as calibration statistics next to points per
