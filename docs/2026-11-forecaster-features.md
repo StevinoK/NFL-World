@@ -300,6 +300,64 @@ Recommendations (these replace the earlier suggestion to feed drive ratings to t
    `rush`, `comp`, `int`, `ay`, `yac`, `sack`).
 4. Red-zone TD rate is noise at the team level (week-to-week correlation 0.07).
 
+## Split, charting and tracking features in the per-play models
+
+The pipeline uses pass location, run location and gap, shotgun and no-huddle only as controls in the ridge
+over-expectation baseline (`ridge/expectations.py`). It uses FTN charting only for interception-worthy throws
+and routes, and Next Gen Stats not at all.
+
+`exp_split_features.py` tests each family as inputs to the sim's per-play models. The design is the same as
+above: LightGBM with the situation plus EPA-style team ratings, train 2018-24, test 2025-26, game-clustered z.
+Two families get their own baselines:
+
+- **Next Gen Stats:** both sides of that comparison also get box-score player ratings like the sim's (passer
+  EPA, CPOE and sack rate; receiver yards per target, catch rate and YAC; rusher yards per carry).
+- **FTN charting:** starts in 2022, so it trains on 2023-24 against a baseline on the same rows.
+
+Every input is available during the season. Play-by-play location fields, FTN charting and NGS weekly files
+were all current through week 10 of 2026 on November 19. Participation-only fields (personnel, defenders in
+the box, coverage, charted pressure) are excluded.
+
+Change in held-out log loss (negative = better), z in parentheses when |z| > 1.3:
+
+| Family | Play call | Rush yds | Sack | Completion | INT | Air yds | YAC |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Team pass EPA by location + middle share | +0.08 | +0.17 (2.6) | +0.08 | +0.06 | −0.04 | −0.08 (−1.4) | −0.04 |
+| Team rush EPA inside/outside + by direction | +0.21 (3.6) | +0.11 (1.5) | +0.04 | +0.04 | −0.27 | −0.04 | +0.04 |
+| Team 3rd-down conversion, early-down EPA | 0.00 | +0.14 (2.4) | +0.19 (1.4) | +0.03 | −0.03 | +0.10 (1.9) | −0.01 |
+| Team shotgun, no-huddle rates | +0.03 | −0.03 | +0.06 | +0.03 | −0.50 (−1.5) | −0.05 | −0.05 |
+| Team FTN charting: play action rate and EPA, screen and motion rates, blitz rate, box count, pass rushers | +0.05 | −0.08 | +0.10 | +0.21 (1.6) | −0.80 | **−0.29 (−2.7)** | −0.24 (−1.8) |
+| Player NGS: QB time to throw, aggressiveness, intended air yards, CPOE; WR separation, cushion, YAC over expected; RB yards over expected, efficiency, time to LOS, 8+ box share | | +0.02 | +0.04 | −0.10 (−1.4) | −0.22 | **−0.25 (−3.6)** | +0.01 |
+| Location stage: the play's actual location | | −0.59 (−8.3) | | −0.74 (−7.8) | −0.14 | | −0.23 (−3.2) |
+| Location stage: + team ratings at that location | | **−0.23 (−3.1)** | | −0.01 | −0.37 | | +0.02 |
+
+What this says:
+
+- **Team splits by location, situation and formation add nothing**, and some make the models slightly worse.
+  Opponent-adjusted EPA by pass location or run direction is too thin per team to beat the overall ratings.
+- **Air yards is the one model that gains**, from NGS (−0.25%, z −3.6) and FTN (−0.29%, z −2.7). Both likely
+  overlap inputs the sim already has but this baseline lacks: `adot`, the receivers' deep, medium and short
+  shares, and the passer's depth rates. FTN's screen rate is the exception, since the sim has nothing like it
+  and screens set air yards at or behind the line. Test FTN screen rate (offense) on the `ay` model; NGS adds
+  little elsewhere (completion −0.10%, z −1.4).
+- **A location stage.** Knowing the actual pass location or run gap improves completion, YAC and rush yards a
+  lot. In simulation, though, the sim would draw the location from its own model, and if both models are right
+  the stage only redistributes the same outcomes. The real gain is the *matchup*: teams' strength at the drawn
+  location. That pays off for runs (−0.23%, z −3.1) and not passes. A run-direction stage is worth building:
+  - draw inside/outside and left/middle/right from the offense's tendencies and the situation;
+  - then draw yards with offense and defense rush ratings for that direction.
+
+  A pass-location stage is not.
+
+Recommendations:
+
+1. **Run direction stage for `rush`:** add a model for run location and gap (team tendencies plus situation)
+   and the matching offense and defense rush ratings (inside vs outside, direction) as `rush` inputs given the
+   drawn direction. It also lets the sim report run direction in player stats.
+2. **FTN screen rate (and play-action rate) for `ay`,** tested against the sim's existing depth inputs.
+3. **Skip** team pass-location splits, third-down and early-down splits, shotgun and no-huddle rates, and
+   NGS for completion, sack, interception, YAC and rush yards.
+
 ## Not from the forecasters, but found while looking: referee crews
 
 The schedule names each game's referee. A crew's shrunk, strictly prior penalty rate over league average cuts
@@ -318,6 +376,8 @@ and, slightly, the totals.
 | 1 | Points per drive, drive start EP, red-zone trips per drive | Calibration checks in `joint_outcomes`, not per-play inputs (no gain in the scrimmage models) |
 | 2 | Opponent-adjusted punt and kickoff field-position ratings | `punt_distance`, `punt_return`, `kickoff`, if the calibration check shows too little spread between teams |
 | 2 | Referee crew penalty rate | Penalty models |
+| 2 | Run-direction stage with offense/defense rush ratings by direction | `rush` (new location model before it) |
+| 3 | FTN screen and play-action rates | `ay`, tested against the existing depth inputs |
 | 2 | `distance_to_sticks`, `air_is_zero` | `comp`, `int`, `yac` |
 | 3 | Market-informed preseason prior (optional) | Ridge preseason start, if market dependence is acceptable |
 | — | Travel, time zones, body clock, divisional, surface | Not recommended: no held-out gain |
