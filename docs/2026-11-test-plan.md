@@ -14,8 +14,8 @@ tests used public play-by-play with LightGBM stand-ins, not our networks.
 
 Every item below is scored on the same yardstick: per-model held-out log loss (forward split), then the
 existing paired backtest (current size; about 100 games resolve only ±0.01 Brier, so read its differences
-with their intervals). Backtest metrics: (win Brier and log loss, spread and total CRPS, spread and total SD with mean squared z,
-home/away score correlation, `joint_outcomes` dispersions and correlation gaps).
+with their intervals). Backtest metrics: win Brier and log loss, spread and total CRPS, spread and total SD with mean squared z,
+home/away score correlation, and `joint_outcomes` dispersions and correlation gaps.
 
 ## 1. No retraining (sim and bundle changes only)
 
