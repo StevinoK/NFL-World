@@ -121,6 +121,80 @@ current line. So a market-informed preseason prior is worth testing if depending
 is acceptable. The bigger target remains this week's lineup information, which the player-value and usage
 work already pursues.
 
+## Drive efficiency: points per drive (Silver Bulletin) and expected drive points (Fortgang)
+
+Silver Bulletin's ELWAY projects points per play and plays per game for each team and simulates drives (the
+2025 league average was about 2.1 points per drive). Judah Fortgang's *Drive Quality* / *Earned Drive Points*
+rates drives on expected points rather than on whether they scored. Its write-up could not be read from the
+analysis environment; the search excerpt describes a component built on "the average score probability on a
+drive relative to its starting expected points". The versions tested here are approximations built from that
+description, not Fortgang's formula.
+
+**Test (`exp_drive_metrics.py`).** Each metric becomes an opponent-adjusted, recency-weighted ridge rating for
+offense and defense, refit each week on earlier games. A team's points are then predicted, leave one season out
+(2017-26, 5,066 team-games), from the baseline plus the metric. The baseline is EPA per play and plays per game,
+for this team's offense against the opponent's defense and for the reverse matchup. Our team inputs are
+EPA-based, and the sim generates pace itself, so this is the fair comparison. "Team-relative" versions subtract
+each week's league mean, so the 2024-25 kickoff rule changes can't pose as team skill.
+
+| Added to the baseline (both sides) | Team points RMSE | Margin RMSE | z (negative = better) |
+| --- | --- | --- | --- |
+| Baseline: EPA/play + plays | 9.595 | 13.450 | |
+| + success rate | 9.595 | 13.446 | +0.0 |
+| + points per play (ELWAY-style) | **9.524** | **13.278** | **−4.4** |
+| + points per drive (Silver Bulletin) | 9.534 | 13.302 | −4.0 |
+| + expected drive points, mean EP including the start | 9.533 | 13.285 | −3.9 |
+| + EP gained within drives (mean EP − start EP) | 9.594 | 13.443 | −0.3 |
+| + points per drive over starting EP | 9.569 | 13.402 | −2.5 |
+| + drive start EP (field position) | 9.542 | 13.301 | −3.6 |
+| + start EP after punts / after kickoffs | 9.544 / 9.545 | 13.298 / 13.319 | −3.5 / −3.5 |
+| + share of drives starting from takeaways or downs | 9.593 | 13.443 | −0.4 |
+| + red-zone trips per drive | 9.557 | 13.349 | −3.1 |
+| + red-zone TD rate | 9.598 | 13.453 | +0.7 |
+| + points scored/allowed | 9.520 | 13.268 | −4.5 |
+| + points per drive, team-relative | 9.540 | 13.302 | −3.6 |
+| + drive start EP, team-relative | 9.542 | 13.301 | −3.7 |
+| + points per drive + start EP + red-zone trips, team-relative | 9.544 | 13.292 | −3.1 |
+
+How stable each rating is (correlation with the next game's value of the same metric): EPA/play 0.34, points per
+drive 0.33, EP gained within drives 0.29, drive start EP 0.51, start EP after punts 0.34, red-zone trips per drive
+0.29, red-zone TD rate 0.07, takeaway-started drives 0.12.
+
+What this says:
+
+- **Drive efficiency carries information EPA per play misses**, worth about 0.15-0.17 points of margin RMSE.
+  It survives both teams being in the baseline and removing league-wide trends. Points per play, points per
+  drive and expected drive points carry largely the same signal: combining them adds little over the best one.
+- **Where the gain comes from.** Field position (where a team's drives start after punts and kickoffs), and
+  reaching the red zone per drive.
+- **Where it doesn't come from.**
+  - The EP a team gains *within* drives, which is the part closest to an outcome-free drive-quality measure.
+    EPA per play already holds that.
+  - Red-zone TD rate, which barely repeats (0.07).
+  - Takeaway-started drives (0.12).
+- This fits an open item in the October review: the sim's yards are calibrated but its **points per 100 yards
+  are not** (dispersion 1.24-1.32). Field position and scoring-range trips are exactly how yards turn into points.
+
+Recommendations:
+
+1. **Check team-level field position in the sim first.** Compare each team's simulated mean drive start EP and
+   red-zone trips per drive with actual values over the backtest. The October review found the special-teams
+   inputs carry little signal (4.8% skill for punt distance, about 0 for kickoffs). If simulated teams vary too
+   little in drive start, opponent-adjusted drive-start ratings for punts and kickoffs (kicking team allowed,
+   receiving team gained) are better inputs to the `kickoff`, `punt_distance` and `punt_return` models than the
+   current shrunk league deviations.
+2. **Add ridge targets for points per drive and drive start EP** (team scope, offense and defense), and feed them
+   as team context to the `play`, `rush`, `target` and `time` models, alongside `epa_rate`. Fitting points per
+   drive over a field-position expectation, like the existing over-expectation targets, keeps the two parts
+   separate.
+3. **Add points per drive and drive start EP to `joint_outcomes`** as calibration statistics next to points per
+   100 yards.
+4. Skip red-zone TD rate as an input; it is noise at the team level.
+
+Caveat: the baseline here is raw EPA per play. Our models see a richer set (first downs, explosive rushes, CPOE,
+success-related targets, special-teams deviations), so the gain on top of the production inputs will be smaller
+than shown and needs the usual refit and backtest.
+
 ## Not from the forecasters, but found while looking: referee crews
 
 The schedule names each game's referee. A crew's shrunk, strictly prior penalty rate over league average cuts
@@ -136,6 +210,7 @@ and, slightly, the totals.
 | 1 | Era / league-environment inputs | All play models (nflfastR uses era dummies in every model) |
 | 1 | Half seconds, quarter, both timeouts, `receive_2h_ko` | `play`, `time`, 4th-down and two-point decisions |
 | 2 | `Diff_Time_Ratio`, strength × time decay | `play`, `time`, decision models |
+| 1 | Points per drive and drive start EP ratings (field position) | Ridge targets as team context for `play`, `rush`, `target`, `time`; drive-start ratings for the special-teams models; sim calibration checks |
 | 2 | Referee crew penalty rate | Penalty models |
 | 2 | `distance_to_sticks`, `air_is_zero` | `comp`, `int`, `yac` |
 | 3 | Market-informed preseason prior (optional) | Ridge preseason start, if market dependence is acceptable |
