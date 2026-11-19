@@ -357,10 +357,26 @@ What this says:
 
   The drawn-location stage keeps about 40% of the oracle's gain, even though the location model barely beats
   league frequencies (log loss 1.851 vs 1.881). It clearly beats giving the same information as plain inputs
-  (B). Most of its gain comes with the matchup ratings (C vs D). So build the run-direction stage. For passes,
-  the matched-rating test given the actual location showed nothing (completion −0.01%, YAC +0.02%), so a
-  pass-location stage is lower priority, though D suggests the structure alone can help. That is untested for
-  passes.
+  (B). Most of its gain comes with the matchup ratings (C vs D). So build the run-direction stage.
+
+  `exp_pass_location_stage.py` runs the same test for passes. The location (left, middle, right) is drawn after
+  air yards and the target, as the sim orders them. The location model sees the offense's middle share, the
+  defense's middle share allowed and the receiver's prior location shares. It barely beats league frequencies
+  (1.026 vs 1.061). YAC uses location weights updated for the catch. Held-out 2025-26 throws (26,797):
+
+  | Model | Completion | Interception | YAC (given catch) |
+  | --- | --- | --- | --- |
+  | A one-step (log loss) | 0.5719 | 0.0986 | 1.9905 |
+  | B one-step + location ratings and tendencies as plain inputs | +0.03% | +0.08% | −0.06% |
+  | C two-step: drawn location + team pass EPA at that location | +0.11% (z 1.9, worse) | −0.31% (z −1.0) | −0.14% (z −2.1) |
+  | D two-step: drawn location, no location ratings | −0.05% | +0.24% | −0.04% |
+  | O oracle: actual location | −0.46% (z −5.3) | −0.28% | −0.14% (z −1.9) |
+
+  For passes the stage loses the oracle's gain. Completion is exactly the textbook case: knowing the real
+  location helps (−0.46%), but a drawn location gives it back (C and D are about 0). The only gain is a small
+  one on YAC (−0.14%, z −2.1), from the matchup ratings rather than the location itself, since C equals the
+  oracle. With 12 comparisons in this table, one at z −2.1 is weak evidence. **A pass-location stage is not
+  worth building**; if anything, test team YAC over expected by location as a YAC input.
 
 Recommendations:
 
