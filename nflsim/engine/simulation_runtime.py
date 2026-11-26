@@ -271,7 +271,7 @@ class SimulationRuntime:
         "penalty_no_play", "penalty_on_play", "penalty_yards", "penalty_first_down",
     ]
     # Loaded when the bundle has them; older bundles fall back to the previous behavior.
-    optional_models = ["sack_yards", "punt_distance", "punt_return", "kickoff", "dropback", "throw"]
+    optional_models = ["sack_yards", "punt_distance", "punt_return", "kickoff", "dropback", "throw", "run_location"]
     # Bound scaled inputs so a near-zero-variance training column (StandardScaler
     # scale_ ~1e-11) can't turn a tiny real-world deviation into a z-score in the
     # hundreds of millions and saturate/degenerate the network's output.
@@ -316,6 +316,17 @@ class SimulationRuntime:
         if strength:  # a fitted team term reads its ratings from the team rows even when no network uses them
             self.required_team_feature_columns = sorted(
                 set(self.required_team_feature_columns) | set(strength["offense"]) | set(strength["defense"]))
+
+    def class_labels(self, model: str) -> List[str]:
+        """A classification model's class names, from its sidecar (dims.class_labels)."""
+        cache = self.__dict__.setdefault("_class_labels", {})
+        if model not in cache:
+            path = Path(self.data_dir) / f"{model}_arch.json"
+            labels = json.loads(path.read_text()).get("dims", {}).get("class_labels") if path.exists() else None
+            if not labels:
+                raise ValueError(f"{model}: sidecar has no class labels")
+            cache[model] = list(labels)
+        return cache[model]
 
     def injected_columns(self, model_key: str) -> List[str]:
         """Columns this model expects that the runtime supplies by name (nflsim.engine.injected_inputs)."""
@@ -1677,6 +1688,17 @@ class Play:
                 cols.extend(getattr(runtime, resolved))
             rb.stats["rushing_attempts"] += 1
             rush = runtime.with_goal_line_inputs("rush", build_frame_from_values(rush_columns, cols), 100 - self.yardline)
+            if "run_location" in runtime.model_dict:
+                # Run-location stage: draw the lane, then rush yards read it (and that side's run ratings).
+                lane_columns = [column for group in runtime.column_dict["run_location"]
+                                for column in getattr(runtime, "rusher_columns" if group == "rusher_cols" else group)]
+                lane_logits = runtime.forward_model_logits("run_location", build_frame_from_values(rush_columns, lane_columns),
+                                                           base_row, latent_draw=_latent_for("run_location"))
+                lanes = runtime.class_labels("run_location")
+                lane = str(np.random.choice(lanes, p=F.softmax(lane_logits, dim=1).detach().numpy()[0]))
+                rush["run_lane"] = lane
+                self.game.diagnostics.setdefault("run_lanes", {}).setdefault(lane, 0)
+                self.game.diagnostics["run_lanes"][lane] += 1
             rush_prob = get_probs(
                 runtime.forward_model_logits("rush", rush, base_row, latent_draw=_latent_for("rush")).detach().numpy()
             )

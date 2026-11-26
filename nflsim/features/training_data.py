@@ -226,6 +226,14 @@ def model_frame(model, pbp, players, roster, semantics=None, time_without_stoppa
     Prepared ridge frames always carry the configured context columns, even when
     a sparse target is unavailable throughout the supplied history.
     """
+    if model == "run_location":
+        # The rush model's rows (non-scramble runs with the carrier's stats), labelled by lane where charted.
+        frame, _ = model_frame("rush", pbp, players, roster, semantics)
+        if "run_lane" not in frame:
+            raise ValueError("run_location needs run_lane (prepare the frame again)")
+        keep = frame.run_lane.notna().to_numpy()
+        frame = frame.loc[keep].reset_index(drop=True)
+        return frame, frame.run_lane.astype(str)
     frame, players, roster = [canonicalize_teams(table) for table in (pbp, players, roster)]
     missing_weather = set(WEATHER_COLUMNS) - set(frame)
     if missing_weather:

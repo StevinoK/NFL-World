@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import random
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
@@ -339,3 +340,29 @@ def test_dropback_outcomes_combine_the_two_stages():
     sack, complete, interception, scramble, incomplete = Play.dropback_outcomes(runtime, [], [], {}, lambda model: None)
     # dropback softmax: sack 1/4, scramble 1/8, throw 5/8; throw softmax: complete 0.6, incomplete 0.3, int 0.1
     assert np.allclose([sack, scramble, complete, incomplete, interception], [0.25, 0.125, 0.375, 0.1875, 0.0625])
+
+
+def test_the_run_location_stage_draws_a_lane_for_the_rush_row():
+    from nflsim.engine.injected_inputs import RUN_LANES
+    seen = {}
+
+    class Recording(StubRuntime):
+        def forward_model_logits(self, model_key, play_frame, base_values=None, latent_draw=None):
+            seen[model_key] = dict(self.with_injected(model_key, play_frame))
+            return super().forward_model_logits(model_key, play_frame, base_values, latent_draw)
+
+    lanes = [NEVER] * len(RUN_LANES)
+    lanes[RUN_LANES.index("left_tackle")] = SURE
+    runtime = Recording(play=[[NEVER, NEVER, NEVER, SURE]], rush=[[NEVER]], run_location=[lanes],
+                        rusher=[[NEVER] * 5 + [SURE] + [NEVER] * 5])
+    runtime.bin_dict["rush"] = {"0": np.array([3, 9])}
+    runtime.column_dict["run_location"] = ["game_state_cols"]
+    runtime._class_labels = {"run_location": list(RUN_LANES)}
+    runtime.processor = {"rush": SimpleNamespace(feature_names_in_=np.array(["down", "run_lane", "pg_run_lane_off_ypc"]))}
+    from nflsim.features.pregame_tables import COLUMNS
+    row = {column: np.nan for column in COLUMNS}
+    runtime.pregame, runtime.game_week = {(2024, 1, "A"): row, (2024, 1, "B"): row}, (2024, 1)
+    runtime.play_state = {"pg_off_run_left_ypc": 5.5, "pg_off_run_right_ypc": 3.0}   # play() snaps without publishing
+    result, _, game = play(runtime, yardline=40)
+    assert result.type == "rush" and game.diagnostics["run_lanes"] == {"left_tackle": 1}
+    assert seen["rush"]["run_lane"] == "left_tackle" and seen["rush"]["pg_run_lane_off_ypc"] == 5.5

@@ -630,6 +630,9 @@ def refit_specs(model_dir: Path) -> dict:
     if set(DROPBACK_MODELS) & set(trained):  # in fit_minimal's order: before dropped and added inputs
         from nflsim.models.fit_minimal import dropback_specs
         specs = dropback_specs(specs)
+    if "run_location" in trained:
+        from nflsim.models.fit_minimal import run_location_specs
+        specs = run_location_specs(specs)
     specs = apply_dropped_inputs(specs, load_dropped_inputs(model_dir))
     specs = apply_added_inputs(specs, load_added_inputs(model_dir))
     specs = {model: spec for model, spec in specs.items() if model in trained}

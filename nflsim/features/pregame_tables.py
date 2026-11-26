@@ -216,6 +216,25 @@ def game_state_values(table: dict, season: int, week: int, offense: str, defense
             **{column: other[column] for column in DEFENSE_COLUMNS}}
 
 
+def with_lane_ratings(frame: pd.DataFrame) -> pd.DataFrame:
+    """pg_run_lane_off/def_ypc: the run ratings for each row's own lane side (as the simulator reads them for the
+    drawn lane)."""
+    from nflsim.engine.injected_inputs import lane_side
+    if "run_lane" not in frame:
+        return frame
+    frame = frame.copy()
+    side = frame.run_lane.map(lane_side)
+    for unit in ("off", "def"):
+        values = np.full(len(frame), np.nan)
+        for direction in DIRECTIONS:
+            column = f"pg_{unit}_run_{direction}_ypc"
+            if column in frame:
+                rows = (side == direction).to_numpy()
+                values[rows] = frame.loc[rows, column].to_numpy(dtype=float)
+        frame[f"pg_run_lane_{unit}_ypc"] = values
+    return frame
+
+
 def lookup(table: pd.DataFrame) -> dict:
     """(season, week, team) -> that row's columns, for the simulator."""
     return {(int(row["season"]), int(row["week"]), str(row["team"])): {column: row[column] for column in COLUMNS}

@@ -81,3 +81,19 @@ def test_added_inputs_must_be_ones_the_simulator_supplies():
         apply_added_inputs(specs, {"kick": ["pass_oe"]})
     with pytest.raises(ValueError, match="unknown models"):
         apply_added_inputs(specs, {"punt": ["qtr"]})
+
+
+def test_lanes_from_play_by_play_and_their_side_ratings():
+    from nflsim.features.pregame_tables import with_lane_ratings
+    pbp = pd.DataFrame({"run_location": ["left", "middle", "right", None], "run_gap": ["tackle", None, "end", None]})
+    lanes = injected_inputs.add_training_columns(pbp).run_lane.tolist()
+    assert lanes[:3] == ["left_tackle", "middle", "right_end"] and pd.isna(lanes[3])
+    rows = pd.DataFrame({"run_lane": ["left_tackle", "middle", None], "pg_off_run_left_ypc": [5.0, 5.0, 5.0],
+                         "pg_off_run_middle_ypc": [4.0, 4.0, 4.0], "pg_def_run_left_ypc": [3.5, 3.5, 3.5]})
+    rated = with_lane_ratings(rows)
+    assert rated.pg_run_lane_off_ypc.iloc[0] == 5.0 and rated.pg_run_lane_off_ypc.iloc[1] == 4.0
+    assert rated.pg_run_lane_def_ypc.iloc[0] == 3.5 and np.isnan(rated.pg_run_lane_off_ypc.iloc[2])
+    # The simulator reads the same side's rating for a drawn lane.
+    state = {"pg_off_run_left_ypc": 5.0, "pg_def_run_left_ypc": 3.5}
+    assert injected_inputs.fill(["pg_run_lane_off_ypc", "pg_run_lane_def_ypc"], {"run_lane": "left_end"}, state) == \
+        {"pg_run_lane_off_ypc": 5.0, "pg_run_lane_def_ypc": 3.5}

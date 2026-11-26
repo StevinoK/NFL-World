@@ -357,3 +357,14 @@ def test_dropback_specs_copy_the_sack_and_completion_inputs():
     assert result["dropback"]["columns"] == ["down"] and result["throw"]["groups"] == ["pass_columns"]
     assert result["throw"]["sidecar"]["dims"]["class_labels"] == ["complete", "incomplete", "interception"]
     assert "row_scope" not in result["throw"]["sidecar"] and result["dropback"]["prefix"] == "dropback"
+
+
+def test_run_location_spec_copies_rush_without_goal_line_inputs():
+    from nflsim.engine.injected_inputs import RUN_LANES
+    from nflsim.features.goal_line import GOAL_LINE_COLUMNS
+    from nflsim.models.fit_minimal import run_location_specs
+    rush = {"prefix": "rush", "columns": ["down", *GOAL_LINE_COLUMNS], "groups": ["game_state_cols", "rusher_cols"],
+            "context_columns": [], "sidecar": {"kind": "corn", "goal_capped": True}}
+    spec = run_location_specs({"rush": rush})["run_location"]
+    assert spec["columns"] == ["down"] and spec["groups"] == rush["groups"] and "goal_capped" not in spec["sidecar"]
+    assert spec["sidecar"]["kind"] == "flat" and spec["sidecar"]["dims"]["class_labels"] == list(RUN_LANES)

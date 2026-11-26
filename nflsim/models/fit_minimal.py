@@ -84,8 +84,8 @@ def with_refit_tables(prepared: pd.DataFrame, directory: Path) -> pd.DataFrame:
     path = Path(directory) / PREGAME_TABLES_FILE
     if not path.is_file():
         return prepared
-    from nflsim.features.pregame_tables import attach_pregame_tables
-    return attach_pregame_tables(prepared, pd.read_csv(path))
+    from nflsim.features.pregame_tables import attach_pregame_tables, with_lane_ratings
+    return with_lane_ratings(attach_pregame_tables(prepared, pd.read_csv(path)))
 
 
 def load_added_inputs(directory: Path) -> dict[str, list[str]]:
@@ -267,6 +267,23 @@ def dropback_specs(specs: dict) -> dict:
     return result
 
 
+def run_location_specs(specs: dict) -> dict:
+    """The run-location model: the rush model's inputs and groups (less the goal-line inputs), as a flat network
+    over the seven lanes."""
+    from nflsim.engine.injected_inputs import RUN_LANES
+    if "rush" not in specs:
+        raise ValueError("run_location takes rush's inputs, and the refit has no rush spec")
+    result = copy.deepcopy(specs)
+    spec = copy.deepcopy(specs["rush"])
+    spec["prefix"] = "run_location"
+    spec["columns"] = [column for column in spec["columns"] if column not in GOAL_LINE_COLUMNS]
+    spec["sidecar"].pop("goal_capped", None)
+    spec["sidecar"].update(kind="flat", artifact_prefix="run_location", model_name="run_location",
+                           dims={"input_dim": 0, "output_dim": len(RUN_LANES), "class_labels": list(RUN_LANES)})
+    result["run_location"] = spec
+    return result
+
+
 def model_rows(model: str, spec: dict, prepared: pd.DataFrame, players: pd.DataFrame, roster: pd.DataFrame):
     """Rows, target and input columns for one model, built exactly as the refit trains them."""
     row_id = "__minimal_fit_row_id"
@@ -439,6 +456,9 @@ def main():
     parser.add_argument("--dropback-models", action="store_true",
                         help="Also train the dropback and throw models (with --models, name them); the simulator uses them "
                              "in place of sack/scramble/comp/int when a bundle has both")
+    parser.add_argument("--run-location-model", action="store_true",
+                        help="Also train run_location (which of seven lanes a run goes to); add run_lane and "
+                             "pg_run_lane_off/def_ypc to rush with --added-inputs (and --pregame-tables) to use the lane")
     parser.add_argument("--cross-fit", action="store_true",
                         help="Train each network once per held-out fifth of games, plus once on every game for the bundle; "
                              "game_effects rows --cross-fit then fits the effects on every game's out-of-fold logits")
@@ -472,6 +492,8 @@ def main():
         if not args.game_effects:
             raise ValueError("--dropback-models needs --game-effects (flat sack and completion specs)")
         specs = dropback_specs(specs)
+    if args.run_location_model:
+        specs = run_location_specs(specs)
     specs = apply_dropped_inputs(specs, dropped)
     specs = apply_added_inputs(specs, added)
     specs = {model: specs[model] for model in (args.models or specs)}
