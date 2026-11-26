@@ -405,7 +405,7 @@ simulations (a Modal worker needs it set in its own environment):
 
 | Variable | Effect |
 | --- | --- |
-| `NFLSIM_SCORING_EXTRAS=<settings.json>` | Two-point tries (by margin and quarter) and safeties |
+| `NFLSIM_SCORING_EXTRAS=<settings.json>` | Two-point tries (by margin and quarter), safeties and, when the settings have an `onside` section, onside kicks. `config/scoring_extras.json` is built from 2021-25 play-by-play by `python -m nflsim.sim.scoring_extras_settings` (0.49 two-point tries, 0.19 onside kicks with 8.6% recovered, 0.05 safeties per game) |
 | `NFLSIM_CLOCK_FIXES=<settings.json>` or `off` | Overtime and kneel-downs; on by default from `config/clock_fixes.json` |
 | `NFLSIM_PAIRED_SEEDS=1` | Seeds that leave out the bundle and run, so two builds play each simulation from the same draws |
 | `NFLSIM_STRENGTH_DRAWS=<settings.json>` | Draws each ridge rating once per simulated game from its posterior: `{"sd_table": "<csv>", "scale": 1.0}`, table from `python -m nflsim.ridge.uncertainty` (below) |

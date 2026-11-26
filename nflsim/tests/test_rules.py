@@ -1,7 +1,9 @@
 """Field-position, scoring and play-call rules, checked on plays whose model outcomes are forced."""
 from __future__ import annotations
 
+import json
 import random
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -13,7 +15,7 @@ from nflsim.engine.simulation_runtime import Game, Play, Player, SimulationRunti
 
 SURE, NEVER = 50.0, -50.0
 MODELS = ["play", "ay", "target", "sack", "comp", "int", "yac", "fumble", "def_ret", "kick", "rush", "rusher", "punt",
-          "time", "penalty_no_play", "penalty_on_play", "penalty_yards", "penalty_first_down"]
+          "time", "kickoff", "penalty_no_play", "penalty_on_play", "penalty_yards", "penalty_first_down"]
 
 
 def binary(probability_one: bool):
@@ -199,3 +201,62 @@ def test_drive_points_add_up_to_the_score_over_whole_games():
             safeties = side.score - summary["drive_points"] - game.return_td_points[id(side)]
             assert safeties >= 0 and safeties % 2 == 0
         assert abs(game.drive_summary(home)["drives"] - game.drive_summary(away)["drives"]) <= 2
+
+
+SETTINGS = Path(__file__).resolve().parents[1] / "config" / "scoring_extras.json"
+
+
+def test_onside_chance_reads_the_window_and_the_kickers_margin():
+    from nflsim.engine.simulation_runtime import onside_chance
+    extras = {"max_margin": 21, "onside": {"last5": {"-7": 0.5, "default": 0.3}, "q4": {"default": 0.1},
+                                           "other": {"default": 0.001}}}
+    assert onside_chance(extras, -7, 4, 120) == 0.5 and onside_chance(extras, -30, 4, 120) == 0.3
+    assert onside_chance(extras, -7, 4, 600) == 0.1 and onside_chance(extras, -7, 2, 120) == 0.001
+    assert onside_chance({"max_margin": 21}, -7, 4, 120) == 0.0           # settings without onside kicks
+
+
+def test_a_recovered_onside_kick_keeps_the_ball(tmp_path, monkeypatch):
+    from nflsim.engine.simulation_runtime import SCORING_EXTRAS_ENV
+    settings = json.loads(SETTINGS.read_text())
+    settings["onside"].update(recovery=1.0, other={"default": 1.0})
+    path = tmp_path / "extras.json"
+    path.write_text(json.dumps(settings))
+    monkeypatch.setenv(SCORING_EXTRAS_ENV, str(path))
+    runtime = StubRuntime(kickoff=[[NEVER]])
+    runtime.bin_dict["kickoff"] = {"0": np.array([25, 30])}
+    home, away = team("A", "home", runtime), team("B", "away", runtime)
+    game = Game(away, home, "outdoors", runtime)
+    game.kickoff(home)
+    assert game.possession is home and game.yardline == settings["onside"]["recovered_start"]
+    assert game.current_drive["how"] == "onside" and game.diagnostics["onside"] == {"tries": 1, "recovered": 1}
+
+
+def test_whole_games_with_scoring_extras_still_add_up(monkeypatch):
+    from nflsim.engine.simulation_runtime import SCORING_EXTRAS_ENV
+    monkeypatch.setenv(SCORING_EXTRAS_ENV, str(SETTINGS))
+    runtime = full_game_runtime()
+    runtime.logits["kickoff"] = [[2.0, 0.0]]
+    runtime.model_dict["kickoff"] = object()
+    runtime.bin_dict["kickoff"] = {"0": np.array([20, 30, 45])}
+    tries = 0
+    for seed in range(30):
+        np.random.seed(seed)
+        random.seed(seed)
+        home, away = team("A", "home", runtime), team("B", "away", runtime)
+        game = Game(away, home, "outdoors", runtime)
+        game.simulate_game()
+        tries += game.diagnostics.get("two_point", {}).get("tries", 0)
+        for side in (home, away):
+            summary = game.drive_summary(side)
+            safeties = side.score - summary["drive_points"] - game.return_td_points[id(side)]
+            assert safeties >= 0 and safeties % 2 == 0
+    assert tries > 0                                                         # about one try every two games
+
+
+def test_shrunk_rates_pull_rare_margins_toward_the_window_rate():
+    from nflsim.sim.scoring_extras_settings import onside_window, shrunk_rates
+    flags = pd.Series([1.0, 0.0, 0.0, 0.0] + [0.0] * 96)
+    margins = pd.Series([-2.0] + [0.0] * 99)
+    table = shrunk_rates(flags, margins, 21, prior_strength=10.0)
+    assert table["default"] == 0.01 and np.isclose(table["-2"], (1 + 10 * 0.01) / 11, atol=1e-4)
+    assert onside_window(4, 200) == "last5" and onside_window(4, 800) == "q4" and onside_window(3, 200) == "other"

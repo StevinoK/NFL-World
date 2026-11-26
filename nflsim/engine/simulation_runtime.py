@@ -1132,6 +1132,18 @@ def go_for_two_chance(extras: Dict[str, Any], margin: float, late: bool) -> floa
     return float(table.get(key, table["default"]))
 
 
+def onside_chance(extras: Dict[str, Any], kicker_margin: float, quarter: int, clock: float) -> float:
+    """How often the kicking team tries an onside kick, by its margin and the time left (settings from
+    nflsim.sim.scoring_extras_settings); 0 when the settings have no onside section."""
+    onside = extras.get("onside")
+    if not onside:
+        return 0.0
+    window = "last5" if quarter == 4 and clock <= 300 else "q4" if quarter == 4 else "other"
+    table = onside[window]
+    limit = int(extras["max_margin"])
+    return float(table.get(str(int(np.clip(round(kicker_margin), -limit, limit))), table["default"]))
+
+
 class Play:
     def __init__(self, down: int, distance: int, yardline: int, game: "Game"):
         self.down = down
@@ -1921,6 +1933,8 @@ class Game:
             "pat_made": float(self.diagnostics["kick_attempts"]["pat_made"]),
             **({"two_point_tries": float(self.diagnostics.get("two_point", {}).get("tries", 0)),
                 "two_point_made": float(self.diagnostics.get("two_point", {}).get("made", 0)),
+                "onside_tries": float(self.diagnostics.get("onside", {}).get("tries", 0)),
+                "onside_recovered": float(self.diagnostics.get("onside", {}).get("recovered", 0)),
                 "safeties": float(self.diagnostics.get("safeties", 0))} if scoring_extras() is not None else {}),
             **({"kneels": float(self.diagnostics.get("kneels", 0)),
                 "overtimes": float(self.diagnostics.get("overtimes", 0))} if clock_fixes() is not None else {}),
@@ -2036,6 +2050,11 @@ class Game:
         """Kick off to the other team, which starts where the kickoff model puts it; a return TD scores 7 and it kicks back."""
         while True:
             receiving = self.team2 if kicking is self.team1 else self.team1
+            extras = scoring_extras()
+            chance = 0.0 if extras is None else onside_chance(extras, kicking.score - receiving.score, self.quarter, self.clock)
+            if chance > 0 and random.random() < chance:
+                self.onside_kick(kicking, receiving, extras["onside"])
+                return
             state = [kicking.score, 1, self.game_seconds(), receiving.score,
                      receiving.home, 35, 10, self.dome, receiving.score - kicking.score]
             start = self.sample_special_teams("kickoff", state, self.special_teams_values(kicking, receiving), receiving)
@@ -2055,6 +2074,22 @@ class Game:
             self._normalize_down_distance()
             self.start_drive("kickoff")
             return
+
+    def onside_kick(self, kicking: Team, receiving: Team, settings: Dict[str, Any]) -> None:
+        """An onside kick: the kicking team keeps the ball near midfield if it recovers, else the receiving team
+        starts there."""
+        counts = self.diagnostics.setdefault("onside", {"tries": 0, "recovered": 0})
+        counts["tries"] += 1
+        if random.random() < float(settings["recovery"]):
+            counts["recovered"] += 1
+            self.possession, self.defense = kicking, receiving
+            self.yardline = float(settings["recovered_start"])
+        else:
+            self.possession, self.defense = receiving, kicking
+            self.yardline = float(settings["lost_start"])
+        self.down, self.distance = 1, 10
+        self._normalize_down_distance()
+        self.start_drive("onside")
 
     def _sample_post_score_switch_yardline(self) -> int:
         """Sample receiving field position after kickoff (expressed in the current
