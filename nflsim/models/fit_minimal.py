@@ -18,7 +18,7 @@ from nflsim.paths import ROOT, digest, output_dir, write_json
 from nflsim.semantics import ISOLATED_MU_CONTEXT_V2
 from nflsim.features.goal_line import GOAL_CAPPED_MODELS, GOAL_LINE_COLUMNS, with_goal_line_inputs
 from nflsim.features.weather import WEATHER_COLUMNS as WEATHER_FRAME_COLUMNS
-from nflsim.features.training_data import ATTEMPT_MODELS, model_frame, prepare_frame
+from nflsim.features.training_data import ATTEMPT_MODELS, DROPBACK_MODELS, model_frame, prepare_frame
 from nflsim.models.train import HOLDOUT_FOLDS, cascade_metric_record, fit_network
 from nflsim.configuration import TARGETS_BY_NAME, V2_MODEL_CONTEXT
 from nflsim.engine.simulation_runtime import SimulationRuntime
@@ -249,6 +249,24 @@ def game_effects_specs(specs: dict, model_manifest: dict) -> dict:
     return result
 
 
+def dropback_specs(specs: dict) -> dict:
+    """Specs for the dropback (sack, scramble or throw) and throw (complete, incomplete or interception) models: the
+    sack and completion models' inputs and column groups, as 3-class flat networks."""
+    result = copy.deepcopy(specs)
+    for model, (source, labels) in DROPBACK_MODELS.items():
+        if source not in specs:
+            raise ValueError(f"{model} takes {source}'s inputs, and the refit has no {source} spec")
+        spec = copy.deepcopy(specs[source])
+        spec["prefix"] = model
+        sidecar = spec["sidecar"]
+        for key in ("row_scope", "goal_capped"):
+            sidecar.pop(key, None)
+        sidecar.update(kind="flat", artifact_prefix=model, model_name=model,
+                       dims={"input_dim": 0, "output_dim": len(labels), "class_labels": labels})
+        result[model] = spec
+    return result
+
+
 def model_rows(model: str, spec: dict, prepared: pd.DataFrame, players: pd.DataFrame, roster: pd.DataFrame):
     """Rows, target and input columns for one model, built exactly as the refit trains them."""
     row_id = "__minimal_fit_row_id"
@@ -418,6 +436,9 @@ def main():
     parser.add_argument("--pregame-tables", type=Path,
                         help="pregame_tables.csv from nflsim.features.pregame_tables, for pg_* added inputs (copied into "
                              f"the output as {PREGAME_TABLES_FILE})")
+    parser.add_argument("--dropback-models", action="store_true",
+                        help="Also train the dropback and throw models (with --models, name them); the simulator uses them "
+                             "in place of sack/scramble/comp/int when a bundle has both")
     parser.add_argument("--cross-fit", action="store_true",
                         help="Train each network once per held-out fifth of games, plus once on every game for the bundle; "
                              "game_effects rows --cross-fit then fits the effects on every game's out-of-fold logits")
@@ -447,6 +468,10 @@ def main():
     specs = {model: reduced_spec(model, model_manifest["models"][model]) for model in model_manifest["models"]}
     if args.game_effects:
         specs = game_effects_specs(specs, model_manifest)
+    if args.dropback_models:
+        if not args.game_effects:
+            raise ValueError("--dropback-models needs --game-effects (flat sack and completion specs)")
+        specs = dropback_specs(specs)
     specs = apply_dropped_inputs(specs, dropped)
     specs = apply_added_inputs(specs, added)
     specs = {model: specs[model] for model in (args.models or specs)}

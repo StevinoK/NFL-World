@@ -334,3 +334,26 @@ def test_clock_rows_can_leave_out_plays_stopped_by_a_timeout_or_the_warning():
     assert len(model_frame("time", frame, pd.DataFrame(), pd.DataFrame())[0]) == 3
     kept, target = model_frame("time", frame, pd.DataFrame(), pd.DataFrame(), time_without_stoppages=True)
     assert target.tolist() == [30.0, 35.0]
+
+
+def test_dropback_and_throw_rows_and_labels():
+    from nflsim.features.training_data import model_frame
+    plays = pd.DataFrame({"game_id": "g", "posteam": "A", "defteam": "B", "penalty": 0, "qb_dropback": 1,
+                          "sack": [1, 0, 0, 0, 0], "qb_scramble": [0, 1, 0, 0, 0], "complete_pass": [0, 0, 1, 0, 0],
+                          "interception": [0, 0, 0, 1, 0], "air_yards": [np.nan, np.nan, 8.0, 20.0, 5.0]})
+    _, dropback = model_frame("dropback", plays, pd.DataFrame(), pd.DataFrame())
+    assert dropback.tolist() == ["sack", "scramble", "throw", "throw", "throw"]
+    _, throw = model_frame("throw", plays, pd.DataFrame(), pd.DataFrame())
+    assert throw.tolist() == ["complete", "interception", "incomplete"]
+
+
+def test_dropback_specs_copy_the_sack_and_completion_inputs():
+    from nflsim.models.fit_minimal import dropback_specs
+    specs = {"sack": {"prefix": "sack", "columns": ["down"], "groups": ["game_state_cols"], "context_columns": [],
+                      "sidecar": {"kind": "flat"}},
+             "comp": {"prefix": "comp", "columns": ["air_yards"], "groups": ["pass_columns"], "context_columns": [],
+                      "sidecar": {"kind": "flat", "row_scope": "attempts"}}}
+    result = dropback_specs(specs)
+    assert result["dropback"]["columns"] == ["down"] and result["throw"]["groups"] == ["pass_columns"]
+    assert result["throw"]["sidecar"]["dims"]["class_labels"] == ["complete", "incomplete", "interception"]
+    assert "row_scope" not in result["throw"]["sidecar"] and result["dropback"]["prefix"] == "dropback"

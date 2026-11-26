@@ -36,7 +36,7 @@ from nflsim.engine.game_effects import FILE_NAME, head_width
 from nflsim.engine.model_architecture import build_network
 from nflsim.engine.simulation_runtime import SKILL_SLOT_ORDER
 from nflsim.features.goal_line import yards_available
-from nflsim.features.training_data import prepare_frame
+from nflsim.features.training_data import DROPBACK_MODELS, prepare_frame
 from nflsim.models.train import HOLDOUT_FOLDS, game_folds, holdout_games
 from nflsim.paths import ROOT, write_json
 from nflsim.semantics import ISOLATED_MU_CONTEXT_V2
@@ -626,9 +626,12 @@ def refit_specs(model_dir: Path) -> dict:
                                            load_added_inputs, load_dropped_inputs, reduced_spec)
     reference = json.loads((REFERENCE / "model_manifest.json").read_text())
     specs = game_effects_specs({model: reduced_spec(model, spec) for model, spec in reference["models"].items()}, reference)
+    trained = json.loads((model_dir / "reduced_model_manifest.json").read_text())["models"]
+    if set(DROPBACK_MODELS) & set(trained):  # in fit_minimal's order: before dropped and added inputs
+        from nflsim.models.fit_minimal import dropback_specs
+        specs = dropback_specs(specs)
     specs = apply_dropped_inputs(specs, load_dropped_inputs(model_dir))
     specs = apply_added_inputs(specs, load_added_inputs(model_dir))
-    trained = json.loads((model_dir / "reduced_model_manifest.json").read_text())["models"]
     specs = {model: spec for model, spec in specs.items() if model in trained}
     for spec in specs.values():
         # Rows follow the refit's own choice (e.g. a clock model trained without timeout-stopped plays).

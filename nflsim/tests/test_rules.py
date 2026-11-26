@@ -319,3 +319,23 @@ def test_whole_games_with_timeouts_use_them_late(monkeypatch, tmp_path):
         assert game.diagnostics.get("two_minute_warnings", 0) <= 2
         assert all(0 <= left <= 3 for left in game.timeouts_left.values())
     assert 0 < np.mean(used) < 12
+
+
+def test_dropback_and_throw_models_replace_the_four_pass_outcome_models():
+    # sack/comp/int say "always complete"; the dropback model says sack. The dropback pair must win.
+    runtime = StubRuntime(comp=binary(True), dropback=[[SURE, NEVER, NEVER]], throw=[[SURE, NEVER, NEVER]])
+    runtime.column_dict.update(dropback=["game_state_cols"], throw=["game_state_cols"])
+    result, qb, _ = play(runtime, yardline=50)
+    assert result.type == "sack" and qb.stats["sacks"] == 1
+    runtime = StubRuntime(dropback=[[NEVER, NEVER, SURE]], throw=[[NEVER, NEVER, SURE]], int=binary(False))
+    runtime.column_dict.update(dropback=["game_state_cols"], throw=["game_state_cols"])
+    picked, qb, _ = play(runtime, yardline=50)
+    assert picked.type == "interception" and qb.stats["interceptions"] == 1
+
+
+def test_dropback_outcomes_combine_the_two_stages():
+    runtime = StubRuntime(dropback=[[0.0, np.log(0.5), np.log(2.5)]], throw=[[np.log(6.0), np.log(3.0), 0.0]])
+    runtime.column_dict.update(dropback=["game_state_cols"], throw=["game_state_cols"])
+    sack, complete, interception, scramble, incomplete = Play.dropback_outcomes(runtime, [], [], {}, lambda model: None)
+    # dropback softmax: sack 1/4, scramble 1/8, throw 5/8; throw softmax: complete 0.6, incomplete 0.3, int 0.1
+    assert np.allclose([sack, scramble, complete, incomplete, interception], [0.25, 0.125, 0.375, 0.1875, 0.0625])

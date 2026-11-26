@@ -214,6 +214,9 @@ def classify(frame):
 # Trained on throws only and read as P(outcome | throw): a sack or scramble has no air yards, and filling
 # them in would teach the network that passes near the average depth are never caught.
 ATTEMPT_MODELS = {"comp", "int"}
+# One model per dropback stage in place of sack/scramble and comp/int (fit_minimal --dropback-models).
+DROPBACK_MODELS = {"dropback": ("sack", ["sack", "scramble", "throw"]),
+                   "throw": ("comp", ["complete", "incomplete", "interception"])}
 
 
 def model_frame(model, pbp, players, roster, semantics=None, time_without_stoppages=False):
@@ -238,6 +241,14 @@ def model_frame(model, pbp, players, roster, semantics=None, time_without_stoppa
         if model in ATTEMPT_MODELS:
             frame = frame[frame.air_yards.notna() & ~flag("sack") & ~flag("qb_scramble")]
         target = frame[binary[model]].fillna(0).astype(int)
+    elif model in DROPBACK_MODELS:
+        frame = frame[flag("qb_dropback")]
+        if model == "throw":
+            frame = frame[frame.air_yards.notna() & ~flag("sack") & ~flag("qb_scramble")]
+            labels = np.select([flag("complete_pass"), flag("interception")], ["complete", "interception"], "incomplete")
+        else:
+            labels = np.select([flag("sack"), flag("qb_scramble")], ["sack", "scramble"], "throw")
+        target = pd.Series(labels, index=frame.index)
     elif model == "play":
         frame["label"] = np.select([flag("qb_dropback"), flag("rush"), flag("punt_attempt"), flag("field_goal_attempt")], ["pass", "rush", "punt", "kick"], "other")
         frame = frame[frame.label.ne("other")]

@@ -271,7 +271,7 @@ class SimulationRuntime:
         "penalty_no_play", "penalty_on_play", "penalty_yards", "penalty_first_down",
     ]
     # Loaded when the bundle has them; older bundles fall back to the previous behavior.
-    optional_models = ["sack_yards", "punt_distance", "punt_return", "kickoff"]
+    optional_models = ["sack_yards", "punt_distance", "punt_return", "kickoff", "dropback", "throw"]
     # Bound scaled inputs so a near-zero-variance training column (StandardScaler
     # scale_ ~1e-11) can't turn a tiny real-world deviation into a z-score in the
     # hundreds of millions and saturate/degenerate the network's output.
@@ -1440,10 +1440,6 @@ class Play:
             for collist in runtime.column_dict["sack"]:
                 cols.extend(getattr(runtime, collist))
             sack = build_frame_from_values(sack_pred_columns, cols)
-            sack_prob = F.softmax(
-                runtime.forward_model_logits("sack", sack, base_row, latent_draw=_latent_for("sack")),
-                dim=1,
-            ).detach().numpy()[0][1]
 
             comp_columns = gc.copy()
             comp_columns.extend(dc)
@@ -1456,49 +1452,39 @@ class Play:
             for collist in runtime.column_dict["comp"]:
                 cols.extend(getattr(runtime, collist))
             comp = build_frame_from_values(comp_columns, cols)
-            #for col, val in comp.iloc[0].items():
-                #print(offense.name, col, val)
-            completion_prob = F.softmax(
-                runtime.forward_model_logits("comp", comp, base_row, latent_draw=_latent_for("comp")),
-                dim=1,
-            ).detach().numpy()[0][1]
-            interception_prob = F.softmax(
-                runtime.forward_model_logits("int", comp, base_row, latent_draw=_latent_for("int")),
-                dim=1,
-            ).detach().numpy()[0][1]
-            scramble_prob = 0.0
-            if "scramble" in runtime.model_dict:
-                scramble_prob = float(
-                    F.softmax(
-                        runtime.forward_model_logits("scramble", sack, base_row, latent_draw=_latent_for("scramble")),
-                        dim=1,
-                    ).detach().numpy()[0][1]
-                )
+            if "dropback" in runtime.model_dict and "throw" in runtime.model_dict:
+                # One dropback model (sack, scramble or throw) and one throw model (complete, incomplete or
+                # interception) in place of four separate yes/no models renormalized together.
+                dropback = self.dropback_outcomes(runtime, sack_pred_columns, comp_columns, base_row, _latent_for)
+                probs = np.array(dropback, dtype=float)
+            else:
+                sack_prob = F.softmax(
+                    runtime.forward_model_logits("sack", sack, base_row, latent_draw=_latent_for("sack")),
+                    dim=1,
+                ).detach().numpy()[0][1]
+                completion_prob = F.softmax(
+                    runtime.forward_model_logits("comp", comp, base_row, latent_draw=_latent_for("comp")),
+                    dim=1,
+                ).detach().numpy()[0][1]
+                interception_prob = F.softmax(
+                    runtime.forward_model_logits("int", comp, base_row, latent_draw=_latent_for("int")),
+                    dim=1,
+                ).detach().numpy()[0][1]
+                scramble_prob = 0.0
+                if "scramble" in runtime.model_dict:
+                    scramble_prob = float(
+                        F.softmax(
+                            runtime.forward_model_logits("scramble", sack, base_row, latent_draw=_latent_for("scramble")),
+                            dim=1,
+                        ).detach().numpy()[0][1]
+                    )
 
-            # Context-aware pass outcome rewrite: the model outputs are still primary, but we
-            # reweight classes to better match observed completion/rush/TD environment without
-            # post-hoc score calibration.
-#            comp_mult = 1.00
-##            sack_mult = 0.96
-##            int_mult = 0.95
-##            scramble_mult = 1.02
-##            if self.yardline >= 80:
-##                comp_mult += 0.03
-##                sack_mult *= 0.97
-##            if self.yardline >= 90:
-##                comp_mult += 0.03
-##                int_mult *= 0.95
-
-##            sack_prob = max(sack_prob * sack_mult, 0.0)
-##            completion_prob = max(completion_prob * comp_mult, 0.0)
-##            interception_prob = max(interception_prob * int_mult, 0.0)
-##            scramble_prob = max(scramble_prob * scramble_mult, 0.0)
-            if runtime.pass_outcomes_given_attempt:
-                throw_prob = max(1 - sack_prob - scramble_prob, 0)
-                completion_prob *= throw_prob
-                interception_prob *= throw_prob
-            incomplete_prob = max(1 - sack_prob - completion_prob - interception_prob - scramble_prob, 0)
-            probs = np.array([sack_prob, completion_prob, interception_prob, scramble_prob, incomplete_prob])
+                if runtime.pass_outcomes_given_attempt:
+                    throw_prob = max(1 - sack_prob - scramble_prob, 0)
+                    completion_prob *= throw_prob
+                    interception_prob *= throw_prob
+                incomplete_prob = max(1 - sack_prob - completion_prob - interception_prob - scramble_prob, 0)
+                probs = np.array([sack_prob, completion_prob, interception_prob, scramble_prob, incomplete_prob])
             probs = probs / probs.sum()
             outcome = np.random.choice([0, 1, 2, 3, 4], p=probs)
 
@@ -1792,6 +1778,19 @@ class Play:
                 punter.stats["punts"] += 1
                 punter.stats["punt_yards"] += punt_yards
             self.description = f"{punter.name if punter else 'Punter'} punts for {self.yards_gained} yards"
+
+    @staticmethod
+    def dropback_outcomes(runtime, sack_values, comp_values, base_row, latent_for) -> List[float]:
+        """[sack, complete, interception, scramble, incomplete] from the dropback and throw models, which read the
+        sack and completion models' inputs."""
+        def probabilities(model, values):
+            columns = [column for group in runtime.column_dict[model] for column in getattr(runtime, group)]
+            frame = build_frame_from_values(values, columns)
+            logits = runtime.forward_model_logits(model, frame, base_row, latent_draw=latent_for(model))
+            return F.softmax(logits, dim=1).detach().numpy()[0]
+        sack, scramble, throw = probabilities("dropback", sack_values)
+        complete, incomplete, interception = probabilities("throw", comp_values)
+        return [sack, throw * complete, throw * interception, scramble, throw * incomplete]
 
     def _apply_return_yards(self, game_context: List[object], defense: Team) -> None:
         runtime = self.game.runtime
