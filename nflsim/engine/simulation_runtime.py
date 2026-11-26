@@ -32,7 +32,7 @@ from nflsim.engine.model_architecture import (
 from nflsim.engine.ngmm_model import NGMMModel
 from nflsim.engine.defaults import artifact_dir
 from nflsim.engine.game_effects import GameEffects
-from nflsim.engine import rules
+from nflsim.engine import injected_inputs, rules
 from nflsim.features.goal_line import GOAL_CAPPED_MODELS, GOAL_LINE_COLUMNS, goal_line_inputs
 
 
@@ -316,6 +316,22 @@ class SimulationRuntime:
         if strength:  # a fitted team term reads its ratings from the team rows even when no network uses them
             self.required_team_feature_columns = sorted(
                 set(self.required_team_feature_columns) | set(strength["offense"]) | set(strength["defense"]))
+
+    def injected_columns(self, model_key: str) -> List[str]:
+        """Columns this model expects that the runtime supplies by name (nflsim.engine.injected_inputs)."""
+        cache = self.__dict__.setdefault("_injected_columns", {})
+        if model_key not in cache:
+            processor = getattr(self, "processor", {}).get(model_key)
+            cache[model_key] = injected_inputs.injectable(
+                [str(column) for column in getattr(processor, "feature_names_in_", [])])
+        return cache[model_key]
+
+    def with_injected(self, model_key: str, row: "PlayRow") -> "PlayRow":
+        columns = self.injected_columns(model_key)
+        if not columns:
+            return row
+        values = injected_inputs.fill(columns, row, getattr(self, "play_state", None) or {})
+        return PlayRow({**row, **values}) if values else row
 
     def apply_temperatures(self) -> None:
         """Divide each network's logits by the temperature its game effects were fit with, by scaling its output
@@ -851,7 +867,7 @@ class SimulationRuntime:
         latent_draw: Optional[np.ndarray] = None,
     ) -> torch.Tensor:
         if isinstance(play_frame, PlayRow):
-            play_frame = play_frame.frame()
+            play_frame = self.with_injected(model_key, play_frame).frame()
         self._validate_selector_required_columns(model_key, play_frame)
         # For cascade models, inject the residual_com feature before preprocessing
         model = self.model_dict[model_key]
@@ -1831,7 +1847,6 @@ class Game:
         self.kickoff_model = "kickoff" in runtime.model_dict
         self.split_punts = {"punt_distance", "punt_return"} <= set(runtime.model_dict)
         self.halftime_pending = False
-        self.opening_receiver: Optional[Team] = None
         timeouts = timeout_settings()
         self.timeouts_left: Optional[Dict[int, int]] = None
         if timeouts is not None:
@@ -1843,6 +1858,11 @@ class Game:
                 raise ValueError("NFLSIM_TIMEOUTS needs a clock model trained without timeout-stopped plays "
                                  "(fit_minimal --time-without-stoppages)")
             self.timeouts_left = {id(team1): int(timeouts["per_half"]), id(team2): int(timeouts["per_half"])}
+        needs_timeouts = [model for model in runtime.model_dict
+                          if set(injected_inputs.TIMEOUT_COLUMNS) & set(runtime.injected_columns(model))]
+        if needs_timeouts and self.timeouts_left is None:
+            raise ValueError(f"{needs_timeouts} take timeouts remaining as inputs; turn on NFLSIM_TIMEOUTS")
+        self.opening_receiver = None
         self.drives: Dict[int, List[Dict[str, Any]]] = {}
         self.current_drive: Optional[Dict[str, Any]] = None
         # Points (touchdown plus try) each team scored on returns and defense, left out of DraftKings points allowed.
@@ -2107,6 +2127,7 @@ class Game:
         """Kick off to the other team, which starts where the kickoff model puts it; a return TD scores 7 and it kicks back."""
         while True:
             receiving = self.team2 if kicking is self.team1 else self.team1
+            self.publish_play_state(receiving, kicking)
             extras = scoring_extras()
             chance = 0.0 if extras is None else onside_chance(extras, kicking.score - receiving.score, self.quarter, self.clock)
             if chance > 0 and random.random() < chance:
@@ -2210,6 +2231,29 @@ class Game:
         if self.clock <= 0:
             self.advance_quarter()
         return time_elapsed
+
+    def publish_play_state(self, offense: Optional[Team] = None, defense: Optional[Team] = None) -> None:
+        """The situation before the next snap (or kick), for models trained with situation inputs
+        (nflsim.engine.injected_inputs): quarter, seconds left in the half, timeouts, second-half kickoff, and the
+        margin scaled by elapsed time. ``offense`` is the team with the ball (the receiving team on a kickoff)."""
+        runtime = getattr(self, "runtime", None)
+        if runtime is None:
+            return
+        offense = offense or self.possession
+        defense = defense or self.defense
+        quarter, clock = int(self.quarter), float(self.clock)
+        opening_receiver = getattr(self, "opening_receiver", None)
+        state = {
+            "qtr": quarter,
+            "half_seconds_remaining": clock + 900.0 if quarter in (1, 3) else clock,
+            "receive_2h_ko": float(quarter <= 2 and opening_receiver is not None and offense is not opening_receiver),
+            "diff_time_ratio": injected_inputs.diff_time_ratio(offense.score - defense.score, self.game_seconds()),
+            "_attributes": offense.attributes,
+        }
+        if getattr(self, "timeouts_left", None) is not None:
+            state["posteam_timeouts_remaining"] = self.timeouts_left[id(offense)]
+            state["defteam_timeouts_remaining"] = self.timeouts_left[id(defense)]
+        runtime.play_state = state
 
     def stop_clock(self, play: "Play", quarter: int, clock_before: float) -> None:
         """With NFLSIM_TIMEOUTS: the two-minute warning stops a clock that ran through 2:00, and after a play whose
@@ -2452,6 +2496,7 @@ class Game:
             # until the first kneel situation.
             if self.current_drive is not None and self.yardline >= 80:
                 self.current_drive["red_zone"] = True
+            self.publish_play_state()
             if chance > 0 and random.random() < chance:
                 self.kneel()
                 continue
@@ -2605,8 +2650,8 @@ class Game:
         progress_interval: int = 25,
     ) -> Dict[str, object]:
         self._resample_prior_embeddings()
+        self.opening_receiver = self.possession
         if self.kickoff_model:
-            self.opening_receiver = self.possession
             self.kickoff(self.defense)
         else:
             self.start_drive("kickoff")

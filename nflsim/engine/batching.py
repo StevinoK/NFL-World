@@ -21,7 +21,8 @@ import torch
 from greenlet import getcurrent, greenlet
 
 # Runtime attributes that belong to one simulation rather than the whole chunk.
-SIMULATION_FIELDS = ("rng", "team_context", "neutral_site", "nan_input_log", "_nan_issue_labels", "_context_cache")
+SIMULATION_FIELDS = ("rng", "team_context", "neutral_site", "nan_input_log", "_nan_issue_labels", "_context_cache",
+                     "play_state")
 # Every module-level function bound to the global generators is rebound to the running simulation's own; any
 # one left out (say random.randrange) would draw from a shared, unseeded stream.
 NUMPY_FUNCTIONS = tuple(name for name in dir(np.random)

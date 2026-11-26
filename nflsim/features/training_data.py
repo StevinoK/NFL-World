@@ -4,6 +4,7 @@ import numpy as np
 import pandas as pd
 
 from nflsim.engine.cascade_model_training import _filter_non_meaningful_games
+from nflsim.engine.injected_inputs import add_training_columns
 from nflsim.configuration import MODEL_CONTEXT, V2_MODEL_CONTEXT, context_columns
 from nflsim.features.builder import canonicalize_teams
 from nflsim.features.slots import USAGE_COLUMNS, rank_slots
@@ -92,6 +93,7 @@ def prepare_frame(pbp, players, teams, semantics=None, seasons=(2017, 2024)):
     pbp = pbp.sort_values(["game_id", "play_id"])
     pbp["elapsed_time"] = pbp.groupby("game_id").game_seconds_remaining.diff(-1)
     pbp["followed_by_stoppage"] = followed_by_stoppage(pbp)
+    pbp = add_training_columns(pbp)  # situation and derived inputs a refit can add (nflsim.engine.injected_inputs)
     pbp["net_yards"] = pbp.kick_distance-pbp.return_yards
     def attach(table, key, left, columns):
         nonlocal pbp

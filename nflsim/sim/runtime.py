@@ -206,6 +206,7 @@ class RidgeRuntime(SimulationRuntime):
 
     def forward_model_logits(self, model_key, play_frame, base_values=None, latent_draw=None):
         if isinstance(play_frame, PlayRow):
+            play_frame = self.with_injected(model_key, play_frame)
             first, fast = dict(play_frame), self._fast_path(model_key, True)
             if not fast:
                 play_frame = play_frame.frame()

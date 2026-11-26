@@ -54,6 +54,30 @@ NOISY_COLUMNS = {"deep_cpoe_allowed", "cpoe_deep", "ridge_cpoe_deep_venue_effect
 
 
 DROPPED_INPUTS_FILE = "dropped_inputs.json"
+ADDED_INPUTS_FILE = "added_inputs.json"
+
+
+def apply_added_inputs(specs: dict, added: dict[str, list[str]]) -> dict:
+    """Add each model's extra inputs (from the prepared frame; the simulator supplies them by name, see
+    nflsim.engine.injected_inputs)."""
+    from nflsim.engine.injected_inputs import injectable
+    unknown = set(added) - set(specs)
+    if unknown:
+        raise ValueError(f"Added inputs name unknown models: {sorted(unknown)}")
+    result = copy.deepcopy(specs)
+    for model, columns in added.items():
+        spec = result[model]
+        new = [column for column in columns if column not in spec["columns"]]
+        unsupported = sorted(set(new) - set(injectable(new)))
+        if unsupported:
+            raise ValueError(f"{model}: the simulator can't supply added inputs {unsupported}")
+        spec["columns"] = list(dict.fromkeys([*spec["columns"], *columns]))
+    return result
+
+
+def load_added_inputs(directory: Path) -> dict[str, list[str]]:
+    path = Path(directory) / ADDED_INPUTS_FILE
+    return json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
 
 
 def apply_dropped_inputs(specs: dict, dropped: dict[str, list[str]]) -> dict:
@@ -375,6 +399,9 @@ def main():
     parser.add_argument("--time-without-stoppages", action="store_true",
                         help="Train the clock model on plays not followed by a timeout or the two-minute warning "
                              "(needed for NFLSIM_TIMEOUTS)")
+    parser.add_argument("--added-inputs", type=Path,
+                        help=f"JSON {{model: [inputs]}} to add (situation, derived and pregame-table inputs the simulator "
+                             f"can supply); copied into the output as {ADDED_INPUTS_FILE}")
     parser.add_argument("--cross-fit", action="store_true",
                         help="Train each network once per held-out fifth of games, plus once on every game for the bundle; "
                              "game_effects rows --cross-fit then fits the effects on every game's out-of-fold logits")
@@ -391,6 +418,13 @@ def main():
             raise ValueError("Output already holds a different dropped-input list; use a fresh output directory")
         write_json(existing, dropped)
     dropped = load_dropped_inputs(output)
+    if args.added_inputs is not None:
+        added = json.loads(args.added_inputs.read_text(encoding="utf-8"))
+        existing = output / ADDED_INPUTS_FILE
+        if existing.is_file() and json.loads(existing.read_text(encoding="utf-8")) != added:
+            raise ValueError("Output already holds a different added-input list; use a fresh output directory")
+        write_json(existing, added)
+    added = load_added_inputs(output)
     model_manifest = json.loads((REFERENCE / "model_manifest.json").read_text())
     training_manifest = json.loads((REFERENCE / "training_manifest.json").read_text())
     selected = args.models or list(model_manifest["models"])
@@ -398,6 +432,7 @@ def main():
     if args.game_effects:
         specs = game_effects_specs(specs, model_manifest)
     specs = apply_dropped_inputs(specs, dropped)
+    specs = apply_added_inputs(specs, added)
     specs = {model: specs[model] for model in (args.models or specs)}
     if args.recency_decay is not None:
         for spec in specs.values():
