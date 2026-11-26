@@ -24,7 +24,7 @@ import pandas as pd
 
 from nflsim.features.bayesian_history import load_pbp_data
 from nflsim.paths import output_dir
-from nflsim.sim.joint_outcomes import observed, simulated
+from nflsim.sim.joint_outcomes import DRIVE_STATS, observed, simulated
 from nflsim.sim.proper_scores import crps, energy_score, variogram_score
 
 SCORES = ["brier", "crps_spread", "crps_total", "energy_points", "energy", "variogram"]
@@ -109,8 +109,9 @@ def evaluate(runs: dict[str, Path], season: int) -> tuple[pd.DataFrame, pd.DataF
     for label, run in runs.items():
         sims, slots = simulated(run)
         built[label] = (sims, observed(run, slots, pbp))
+    # Drive stats are calibration targets in joint_outcomes, not part of the stat line (older runs lack them).
     stats = [column for column in built[next(iter(built))][1] if "." in column
-             and not column.startswith("opp.") and column != "team.win"]
+             and not column.startswith("opp.") and column != "team.win" and column not in DRIVE_STATS]
     actual_all = pd.concat([actual for _, actual in built.values()])
     scale = actual_all[stats].std().replace(0, np.nan).dropna()
     per_game = []

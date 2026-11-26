@@ -65,13 +65,16 @@ def simulate_one(task, runtime, simulation):
     identity = {"game_id": task["game_id"], "simulation": int(simulation)}
     team_score = away.score if swapped else home.score
     synthetic_score = home.score if swapped else away.score
+    task_home, task_away = (away, home) if swapped else (home, away)
+    drive_columns = {f"{side}_{key}": value for side, team in (("home", task_home), ("away", task_away))
+                     for key, value in game.drive_summary(team).items()}
     player_rows = []
     for team in (home, away):
         for player in team.players:
             player_rows.append({**identity, "team": team.name, "player_id": player.player_id, "player_name": player.name, "position": player.position, **player.stats})
         player_rows.extend({**row, **identity} for row in team_unit_rows(team, simulation))
     output = {
-        "game_rows": [{**identity, "home_team": task["home_team"], "away_team": task["away_team"], "neutral_site": runtime.neutral_site, "home_away_swapped": swapped, "home_score": team_score, "away_score": synthetic_score, "total": team_score+synthetic_score, "spread": team_score-synthetic_score}],
+        "game_rows": [{**identity, "home_team": task["home_team"], "away_team": task["away_team"], "neutral_site": runtime.neutral_site, "home_away_swapped": swapped, "home_score": team_score, "away_score": synthetic_score, "total": team_score+synthetic_score, "spread": team_score-synthetic_score, **drive_columns}],
         "player_rows": player_rows,
         "diagnostics": [{**game.diagnostics_row(), **identity}],
         "bucket_rows": [{**row, **identity} for row in game.diagnostics_bucket_rows()],

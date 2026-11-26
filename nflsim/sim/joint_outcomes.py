@@ -30,6 +30,9 @@ SLOT_STATS = {
     "TE1": ["receiving_yards", "receptions"],
 }
 TEAM_STATS = ["points", "win", "rushing_attempts", "rushing_yards"]
+# Drive calibration targets (runs simulated before drives were recorded don't have them). Points per drive leaves out
+# return and defensive touchdowns, which belong to no drive.
+DRIVE_STATS = ["team.drives", "team.points_per_drive", "team.red_zone_trips", "team.drive_start_mean"]
 PAIRS = [
     ("QB1.passing_yards", "WR1.receiving_yards"),
     ("QB1.passing_yards", "WR2.receiving_yards"),
@@ -83,6 +86,43 @@ def sacks_counted_as_attempts(run) -> bool:
     return bool(len(with_sacks)) and bool(((with_sacks.pass_attempt_delta + with_sacks.pass_outcome_scramble).abs() < 1e-9).all())
 
 
+def side_drives(scores, side):
+    """One side's drive stats from a run's game rows (empty when the run didn't record drives)."""
+    if f"{side}_drives" not in scores:
+        return pd.DataFrame(index=scores.index)
+    drives = scores[f"{side}_drives"].astype(float)
+    return pd.DataFrame({"team.drives": drives,
+                         "team.points_per_drive": scores[f"{side}_drive_points"] / drives.where(drives > 0),
+                         "team.red_zone_trips": scores[f"{side}_red_zone_trips"],
+                         "team.drive_start_mean": scores[f"{side}_drive_start_mean"]}, index=scores.index)
+
+
+def actual_drive_stats(pbp):
+    """Per team-game drives from nflverse: a drive needs at least one scrimmage snap (a kickoff returned for a
+    touchdown is not one), its start is the own yardline, and its points are the offense's score change over it."""
+    plays = pbp[pbp.season_type.eq("REG") & pbp.posteam.notna() & pbp.fixed_drive.notna()]
+    keys = ["game_id", "posteam", "fixed_drive"]
+    drives = plays.groupby(keys).agg(
+        snaps=("play_type", lambda types: int(types.isin(["pass", "run", "punt", "field_goal", "qb_kneel", "qb_spike", "no_play"]).sum())),
+        start_line=("drive_start_yard_line", "first"), inside20=("drive_inside20", "max"),
+        before=("posteam_score", "min"), after=("posteam_score_post", "max")).reset_index()
+    drives = drives[drives.snaps > 0]
+
+    def own_yardline(row):
+        text = str(row.start_line).split()
+        if len(text) != 2:
+            return np.nan
+        side, yards = text[0], float(text[1])
+        return yards if side == row.posteam else 50.0 if side == "MID" else 100.0 - yards
+    drives["start"] = drives.apply(own_yardline, axis=1)
+    drives["points"] = (drives.after - drives.before).clip(lower=0)
+    team = drives.groupby(["game_id", "posteam"]).agg(**{
+        "team.drives": ("fixed_drive", "size"), "drive_points": ("points", "sum"),
+        "team.red_zone_trips": ("inside20", "sum"), "team.drive_start_mean": ("start", "mean")})
+    team["team.points_per_drive"] = team.pop("drive_points") / team["team.drives"]
+    return team.rename_axis(["game_id", "team"]).reset_index()
+
+
 def simulated(run):
     """Per (game, team, simulation) outcomes and the player id in each slot."""
     frames, slots = [], []
@@ -93,8 +133,9 @@ def simulated(run):
             # Box-score attempts, as the real stats below count them.
             players["pass_attempts"] = players["pass_attempts"] - players["sacks"]
         scores = pd.read_csv(path.with_name(path.name.replace("_players", "")))
-        points = pd.concat([scores[["game_id", "simulation", "home_team", "home"]].set_axis(["game_id", "simulation", "team", "team.points"], axis=1),
-                            scores[["game_id", "simulation", "away_team", "away"]].set_axis(["game_id", "simulation", "team", "team.points"], axis=1)])
+        points = pd.concat([side_drives(scores, side).assign(**{
+            "game_id": scores.game_id, "simulation": scores.simulation, "team": scores[f"{side}_team"],
+            "team.points": scores[side]}) for side in ("home", "away")])
         offense = players[players.position.str.match(r"^(QB|RB|WR|TE)\d$")]
         totals = offense.groupby(["game_id", "team", "simulation"])[["rushing_attempts", "rushing_yards"]].sum().add_prefix("team.").reset_index()
         tracked = offense[offense.position.isin(list(SLOT_STATS))]
@@ -129,6 +170,8 @@ def observed(run, slots, pbp):
     rows = pd.concat([results.assign(team=results.home_team, **{"team.points": results.actual_home_score}),
                       results.assign(team=results.away_team, **{"team.points": results.actual_away_score})])
     frame = with_win(rows[["game_id", "team", "team.points"]], ["game_id"]).merge(team, on=["game_id", "team"], how="left")
+    if {"fixed_drive", "drive_start_yard_line", "drive_inside20", "posteam_score_post"} <= set(pbp):
+        frame = frame.merge(actual_drive_stats(pbp), on=["game_id", "team"], how="left")
     for slot, names in SLOT_STATS.items():
         # A slot player with no pass, rush or target in the real game has no stats row and drops out.
         players = slots[slots.position.eq(slot)].merge(stats, on=["game_id", "player_id"], how="left")
@@ -151,6 +194,9 @@ def score(sims, actual, seed=0):
             if value is None or pd.isna(value):
                 continue
             x = draws[outcome].to_numpy(float)
+            x = x[np.isfinite(x)]  # points per drive is undefined in a simulation without a drive
+            if len(x) < 2:
+                continue
             pit = float(np.mean(x < value) + rng.uniform()*np.mean(x == value))
             rows.append({"game_id": record["game_id"], "team": record["team"], "outcome": outcome, "actual": float(value), "sim_mean": float(x.mean()), "sim_sd": float(x.std()), "sim_median": float(np.median(x)), "pit": pit, "z": float(norm.ppf(np.clip(pit, 0.5/len(x), 1-0.5/len(x)))), "crps": crps(x, value)})
     return pd.DataFrame(rows)

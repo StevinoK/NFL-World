@@ -1776,6 +1776,8 @@ class Game:
         self.split_punts = {"punt_distance", "punt_return"} <= set(runtime.model_dict)
         self.halftime_pending = False
         self.opening_receiver: Optional[Team] = None
+        self.drives: Dict[int, List[Dict[str, Any]]] = {}
+        self.current_drive: Optional[Dict[str, Any]] = None
         # Points (touchdown plus try) each team scored on returns and defense, left out of DraftKings points allowed.
         self.return_td_points: Dict[int, int] = {id(team1): 0, id(team2): 0}
         # Overtime (with clock fixes on, the default): who received first, whose possessions are over, and who has the ball.
@@ -1977,12 +1979,36 @@ class Game:
         max_to_goal = max(1.0, 100.0 - self.yardline)
         self.distance = float(np.clip(float(self.distance), 1.0, max_to_goal))
 
-    def switch_possession(self, yardline: int = 70) -> None:
+    def switch_possession(self, yardline: int = 70, how: str = "other") -> None:
         self.possession, self.defense = self.defense, self.possession
         self.yardline = 100 - yardline
         self.down = 1
         self.distance = 10
         self._normalize_down_distance()
+        self.start_drive(how)
+
+    def start_drive(self, how: str) -> None:
+        """The team with the ball starts a drive at the current yardline (``how``: kickoff, punt, turnover, downs,
+        missed_fg, free_kick, other); the previous drive ends with the points its offense scored."""
+        self.end_drive()
+        self.current_drive = {"team": self.possession, "how": how, "start": float(self.yardline),
+                              "score_before": self.possession.score, "red_zone": False}
+
+    def end_drive(self) -> None:
+        drive = getattr(self, "current_drive", None)
+        if drive is None:
+            return
+        team = drive.pop("team")
+        drive["points"] = team.score - drive.pop("score_before")
+        self.__dict__.setdefault("drives", {}).setdefault(id(team), []).append(drive)
+        self.current_drive = None
+
+    def drive_summary(self, team: Team) -> Dict[str, float]:
+        """One team's drives in this game: count, points scored on them, red-zone trips, mean start (own yardline)."""
+        drives = self.drives.get(id(team), [])
+        return {"drives": float(len(drives)), "drive_points": float(sum(drive["points"] for drive in drives)),
+                "red_zone_trips": float(sum(drive["red_zone"] for drive in drives)),
+                "drive_start_mean": float(np.mean([drive["start"] for drive in drives])) if drives else np.nan}
 
     def special_teams_values(self, kicking: Team, receiving: Team) -> Dict[str, float]:
         """kick_/ret_ special-teams features for a punt or kickoff (missing team columns are league average, 0)."""
@@ -2027,6 +2053,7 @@ class Game:
             self.down = 1
             self.distance = 10
             self._normalize_down_distance()
+            self.start_drive("kickoff")
             return
 
     def _sample_post_score_switch_yardline(self) -> int:
@@ -2121,6 +2148,7 @@ class Game:
         else:
             self.possession, self.defense = receiving, kicking
             self.yardline, self.down, self.distance = 30, 1, 10
+            self.start_drive("kickoff")
         self.overtime_first = self.possession
         self.overtime_holder = self.possession
         self.overtime_done = []
@@ -2159,7 +2187,7 @@ class Game:
         self.diagnostics["yardage"]["time"]["seconds"] += seconds
         self.clock -= seconds
         if self.down >= 4:
-            self.switch_possession(self.yardline)
+            self.switch_possession(self.yardline, how="downs")
         else:
             self.down += 1
             self.distance -= yards
@@ -2299,6 +2327,8 @@ class Game:
                 fixes, self.quarter, self.clock, self.down, self.possession.score - self.defense.score, 100 - self.yardline)
             # Draw only when a kneel is possible, so the random stream (and a paired-seed run) matches the plain sim
             # until the first kneel situation.
+            if self.current_drive is not None and self.yardline >= 80:
+                self.current_drive["red_zone"] = True
             if chance > 0 and random.random() < chance:
                 self.kneel()
                 continue
@@ -2349,19 +2379,19 @@ class Game:
                     print(self._format_play_line(play, quarter, clock))
                 if play.field_goal_attempt:
                     if not play.field_goal_made:
-                        self.switch_possession(self.yardline + play.yards_gained)
+                        self.switch_possession(self.yardline + play.yards_gained, how="missed_fg")
                         continue
                     if self.kickoff_model:
                         self.kickoff(self.possession)
                     else:
-                        self.switch_possession(70)
+                        self.switch_possession(70, how="kickoff")
                     continue
                 if play.touchdown:
                     self.try_after_touchdown(self.possession, self.defense, live_pbp=live_pbp)
                     if self.kickoff_model:
                         self.kickoff(self.possession)
                     else:
-                        self.switch_possession(self._sample_post_score_switch_yardline())
+                        self.switch_possession(self._sample_post_score_switch_yardline(), how="kickoff")
                     break
                 if play.defensive_touchdown:
                     self.defense.score += 6
@@ -2374,6 +2404,7 @@ class Game:
                     self.yardline = 30
                     self.distance = 10
                     self._normalize_down_distance()
+                    self.start_drive("kickoff")
                     continue
 
                 net_yards = play.yards_gained
@@ -2407,7 +2438,7 @@ class Game:
                     # Safety: the defense scores two and gets a free kick; it starts at its own 40 or so.
                     self.defense.score += 2
                     self.diagnostics["safeties"] = self.diagnostics.get("safeties", 0) + 1
-                    self.switch_possession(100 - int(extras.get("safety_free_kick_start", 40)))
+                    self.switch_possession(100 - int(extras.get("safety_free_kick_start", 40)), how="free_kick")
                     continue
                 if net_yards >= self.distance or auto_first_down:
                     self.down = 1
@@ -2430,10 +2461,10 @@ class Game:
                         )
                     )
                 if play.punt or play.turnover:
-                    self.switch_possession(self.yardline)
+                    self.switch_possession(self.yardline, how="punt" if play.punt else "turnover")
                     continue
             else:
-                self.switch_possession(self.yardline)
+                self.switch_possession(self.yardline, how="downs")
             play_counter += 1
             if progress and play_counter % max(1, int(progress_interval)) == 0:
                 print(
@@ -2453,6 +2484,8 @@ class Game:
         if self.kickoff_model:
             self.opening_receiver = self.possession
             self.kickoff(self.defense)
+        else:
+            self.start_drive("kickoff")
         while (self.quarter <= 4 or self.overtime_pending or (self.quarter == 5 and self.overtime_first is not None)) \
                 and (self.clock > 0 or self.overtime_pending):
             if self.overtime_pending:
@@ -2465,6 +2498,7 @@ class Game:
                     f"[{summary_prefix}] progress: quarter {self.quarter}, clock {self.clock}, plays {self.play_number}",
                     flush=True,
                 )
+        self.end_drive()
         self.update_points_allowed()
         summary = self.build_game_summary()
         if print_summary:

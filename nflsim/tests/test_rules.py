@@ -1,6 +1,8 @@
 """Field-position, scoring and play-call rules, checked on plays whose model outcomes are forced."""
 from __future__ import annotations
 
+import random
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -137,3 +139,63 @@ def test_return_touchdowns_kick_their_own_try():
     defense.score = 6
     assert game.try_after_touchdown(defense, offense) == 1 and defense.score == 7
     assert game.plays[-1].pat_attempt
+
+
+def test_drives_record_their_start_points_and_red_zone_trips():
+    runtime = StubRuntime()
+    home, away = team("A", "home", runtime), team("B", "away", runtime)
+    game = Game(home, away, "outdoors", runtime)
+    game.possession, game.defense, game.yardline = home, away, 25.0
+    game.start_drive("kickoff")
+    game.current_drive["red_zone"] = True
+    home.score += 7
+    game.switch_possession(35.0, how="punt")                  # B starts at its 65... from A's 35 in A's terms
+    away.score += 3
+    game.end_drive()
+    assert game.drive_summary(home) == {"drives": 1.0, "drive_points": 7.0, "red_zone_trips": 1.0, "drive_start_mean": 25.0}
+    assert game.drive_summary(away) == {"drives": 1.0, "drive_points": 3.0, "red_zone_trips": 0.0, "drive_start_mean": 65.0}
+    assert [drive["how"] for drive in game.drives[id(away)]] == ["punt"]
+
+
+def test_actual_drives_need_a_snap_and_start_at_the_own_yardline():
+    from nflsim.sim.joint_outcomes import actual_drive_stats
+
+    rows = [  # A: a kickoff to its 25, a run, a touchdown pass and the PAT; then B returns the kickoff for a touchdown
+        ("kickoff", "A", 1, "A 25", 0, 0, 0), ("run", "A", 1, "A 25", 0, 0, 0), ("pass", "A", 1, "A 25", 1, 0, 6),
+        ("extra_point", "A", 1, "A 25", 1, 6, 7), ("kickoff", "B", 2, "A 0", 0, 0, 6),
+        ("run", "A", 3, "MID 50", 0, 7, 7), ("punt", "A", 3, "MID 50", 0, 7, 7), ("run", "B", 4, "A 40", 1, 7, 7)]
+    pbp = pd.DataFrame(rows, columns=["play_type", "posteam", "fixed_drive", "drive_start_yard_line", "drive_inside20",
+                                      "posteam_score", "posteam_score_post"]).assign(game_id="g", season_type="REG")
+    stats = actual_drive_stats(pbp).set_index("team")
+    assert stats.loc["A", "team.drives"] == 2 and stats.loc["A", "team.points_per_drive"] == 3.5
+    assert stats.loc["A", "team.drive_start_mean"] == 37.5 and stats.loc["A", "team.red_zone_trips"] == 1
+    assert stats.loc["B", "team.drives"] == 1 and stats.loc["B", "team.drive_start_mean"] == 60
+
+
+def full_game_runtime():
+    """Mixed, fixed probabilities for every decision, so whole games run on the stub."""
+    runtime = StubRuntime(
+        play=[[-0.5, 1.0, 0.0, 0.8]], sack=[[2.5, 0.0]], comp=[[0.0, 0.6]], int=[[3.5, 0.0]], fumble=[[4.0, 0.0]],
+        kick=[[0.0, 2.0]], ay=[[1.0, -0.5]], yac=[[0.5, -1.0]], rush=[[1.0, -0.5, -2.0]], punt=[[1.0]], time=[[0.0]],
+        def_ret=[[-1.0]], rusher=[[NEVER] * 5 + [1.0, 0.0] + [NEVER] * 4], target=[[NEVER, 1.0, NEVER, NEVER, NEVER, 0.0] + [NEVER] * 5])
+    runtime.bin_dict.update({"ay": {"0": np.array([0, 8, 25])}, "yac": {"0": np.array([0, 5, 30])},
+                             "rush": {"0": np.array([-2, 3, 8, 40])}, "punt": {"0": np.array([38, 50])},
+                             "time": {"0": np.array([28, 40])}})
+    return runtime
+
+
+def test_drive_points_add_up_to_the_score_over_whole_games():
+    runtime = full_game_runtime()
+    for seed in range(20):
+        np.random.seed(seed)
+        random.seed(seed)
+        home, away = team("A", "home", runtime), team("B", "away", runtime)
+        game = Game(away, home, "outdoors", runtime)
+        game.simulate_game()
+        for side, other in ((home, away), (away, home)):
+            summary = game.drive_summary(side)
+            assert summary["drives"] >= 4
+            # Every point is a drive's, a return or defensive touchdown's, or a safety's (worth 2 to the defense).
+            safeties = side.score - summary["drive_points"] - game.return_td_points[id(side)]
+            assert safeties >= 0 and safeties % 2 == 0
+        assert abs(game.drive_summary(home)["drives"] - game.drive_summary(away)["drives"]) <= 2

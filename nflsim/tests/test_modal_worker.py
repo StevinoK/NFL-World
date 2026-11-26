@@ -41,6 +41,9 @@ class FakeGame:
     def diagnostics_bucket_rows(self):
         return [{"bucket": "early", "count": 2}]
 
+    def drive_summary(self, team):
+        return {"drives": 1.0, "drive_points": float(team.score), "red_zone_trips": 0.0, "drive_start_mean": 25.0}
+
 
 def task(ids):
     return {"data_dir": "unused", "bundle_hash": "hash", "run_id": "test", "game_id": "G", "week": 1, "home_team": "A", "away_team": "B", "roof": "outdoors", "home_players": [], "away_players": [], "team_features": {"A": {}, "B": {}}, "simulation_ids": ids, "start_simulation": ids[0], "count": len(ids), "seed": 7, "task_hash": "task"}
@@ -79,6 +82,8 @@ def test_synthetic_opponent_swaps_roles_at_full_game_midpoint(monkeypatch):
         (30, 10), (30, 10), (10, 30), (10, 30),
     ]
     assert [row["home_away_swapped"] for row in rows] == [False, False, True, True]
+    # Drive stats follow the scheduled team, like the scores.
+    assert all(row["home_drive_points"] == row["home_score"] and row["away_drive_points"] == row["away_score"] for row in rows)
     assert all(row["home_team"] == "A" and row["away_team"] == "B" for row in rows)
 
 
