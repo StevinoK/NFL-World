@@ -416,6 +416,11 @@ spot of the kick or the 20, and return and defensive touchdowns kick a try inste
 `joint_outcomes` subtracts sacks from QB attempts for runs simulated before that change (it reads their attempt
 diagnostics), so old baselines stay comparable.
 
+Training options in `fit_minimal`: `--forward-validation` stops each network early on the latest training season
+(where rule and play-calling drift shows) instead of a random fifth of games, then retrains on every training
+season for the chosen number of epochs; `--recency-decay <factor>` weights training plays down by that factor per
+season before the latest. The shared crc32 holdout for the game effects is unchanged either way.
+
 ## Seed-averaged models
 
 A network's team-level predictions move with its random seed about as much as with a real model change.

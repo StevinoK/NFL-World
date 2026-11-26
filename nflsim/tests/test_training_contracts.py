@@ -283,3 +283,23 @@ def test_maximum_numpy_seed_is_valid():
     sidecar = {"kind": "flat", "dims": {"output_dim": 2}, "arch": {"hidden_dims": [8], "dropout": [0.0]}}
     result = fit_network(frame, pd.Series(np.arange(len(frame)) % 2), ["skill"], sidecar, epochs=1, seed=2**32-1)
     assert np.isfinite(result[2]).all()
+
+def test_forward_validation_stops_on_the_latest_season_then_refits_on_all():
+    frame = synthetic()
+    frame["game_id"] = [f"{2022 + int(game) % 3}_{game}" for game in frame.game_id]
+    labels = pd.Series((frame.skill > 0).astype(int))
+    sidecar = {"kind": "flat", "dims": {"output_dim": 2}, "arch": {"hidden_dims": [8], "dropout": [0.0]},
+               "hyperparameters": {"batch_size": 64, "patience": 2}, "forward_validation": True}
+    model, processor, probs, actual, classes, history, prior = fit_network(frame, labels, ["skill"], sidecar, epochs=6, seed=5)
+    validated = [row for row in history if "valid_loss" in row]
+    refit = [row for row in history if row.get("phase") == "refit"]
+    best = int(np.argmin([row["valid_loss"] for row in validated]))
+    assert validated and len(refit) == best + 1
+    assert probs.shape == (len(actual), 2) and np.isfinite(probs).all()
+    # The scaler saw every training season, not only the earlier ones.
+    from nflsim.models.train import holdout_games
+    train_rows = frame[~holdout_games(frame.game_id)]
+    assert np.isclose(processor.named_transformers_["num"].mean_[0], train_rows.skill.mean())
+    one_season = synthetic().assign(game_id=lambda f: "2024_" + f.game_id)
+    with pytest.raises(ValueError, match="two training seasons"):
+        fit_network(one_season, labels, ["skill"], sidecar, epochs=1)

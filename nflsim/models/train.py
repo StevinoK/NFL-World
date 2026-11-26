@@ -60,9 +60,14 @@ def recency_weights(game_ids, decay):
         return None
     if not 0 < float(decay) <= 1:
         raise ValueError("recency_decay must be in (0, 1]")
-    seasons = pd.Series(game_ids).astype(str).str.slice(0, 4).astype(int).to_numpy()
+    seasons = seasons_of(game_ids)
     weights = float(decay) ** (seasons.max() - seasons)
     return weights / weights.sum()
+
+
+def seasons_of(game_ids) -> np.ndarray:
+    """Seasons from nflverse game ids (``2024_05_KC_BUF``)."""
+    return pd.Series(game_ids).astype(str).str.slice(0, 4).astype(int).to_numpy()
 
 
 def fit_network(frame, target, columns, sidecar, epochs=100, seed=42):
@@ -142,9 +147,19 @@ def fit_network(frame, target, columns, sidecar, epochs=100, seed=42):
     categorical = [column for column in columns if not pd.api.types.is_numeric_dtype(frame[column])]
     numerical = [column for column in columns if column not in categorical]
     processor = ColumnTransformer([("num", StandardScaler(), numerical), ("cat", OneHotEncoder(handle_unknown="ignore", sparse_output=False), categorical)])
-    fit, validation = next(GroupShuffleSplit(n_splits=1, test_size=0.2, random_state=(seed+1) % 2**32).split(frame.iloc[train], groups=groups.iloc[train]))
-    fit, validation = train[fit], train[validation]
-    processor.fit(frame.iloc[fit][columns])
+    forward = bool(sidecar.get("forward_validation"))
+    if forward:
+        # Stop early on the latest training season (drift shows up there), then refit on every training season.
+        seasons = seasons_of(groups.iloc[train])
+        if not (seasons < seasons.max()).any():
+            raise ValueError("Forward validation needs at least two training seasons")
+        fit, validation = train[seasons < seasons.max()], train[seasons == seasons.max()]
+        scaled = train
+    else:
+        fit, validation = next(GroupShuffleSplit(n_splits=1, test_size=0.2, random_state=(seed+1) % 2**32).split(frame.iloc[train], groups=groups.iloc[train]))
+        fit, validation = train[fit], train[validation]
+        scaled = fit
+    processor.fit(frame.iloc[scaled][columns])
     transformed = np.nan_to_num(processor.transform(frame[columns]).astype(np.float32), nan=0.0)
     inputs = torch.from_numpy(transformed).to(device)
     labels = torch.from_numpy(encoded.astype(np.int64)).to(device)
@@ -156,68 +171,84 @@ def fit_network(frame, target, columns, sidecar, epochs=100, seed=42):
     if kind == "hierarchical":
         prior_columns = sidecar["prior_columns"]
         prior_processor = ColumnTransformer([("num", StandardScaler(), prior_columns)])
-        prior_processor.fit(frame.iloc[fit][prior_columns])
+        prior_processor.fit(frame.iloc[scaled][prior_columns])
         prior_inputs = torch.from_numpy(np.nan_to_num(prior_processor.transform(frame[prior_columns]).astype(np.float32))).to(device)
         dims = {"play_input_dim": inputs.shape[1], "prior_input_dim": prior_inputs.shape[1], "latent_dim": hparams.get("latent_dim") or sidecar["dims"]["latent_dim"], "output_dim": len(classes), "ordinal_output": ordinal_target}
-    model = build_network(kind, dims, sidecar["arch"]).to(device)
-    optimizer = build_optimizer(model.parameters(), hparams)
     batch_size = int(hparams["batch_size"])
     if batch_size < 1:
         raise ValueError("batch_size must be positive")
-    scheduler, step_mode = build_scheduler(optimizer, hparams, epochs, steps_per_epoch=(len(fit)+batch_size-1)//batch_size)
     weighting = hparams["class_weighting"]
     if weighting not in {"none", "balanced"}:
         raise ValueError(f"Unsupported class weighting: {weighting}")
     ordinal = kind == "corn" or dims.get("ordinal_output", False)
     if ordinal and (weighting != "none" or hparams["label_smoothing"] != 0):
         raise ValueError("CORN loss does not support class weighting or label smoothing")
-    class_weights = balanced_class_weights(encoded[fit], len(classes)).to(device) if weighting == "balanced" else None
-    def loss_for(indices, kl_scale):
-        if prior_inputs is None:
-            logits, kl = model(inputs[indices]), 0.0
-        else:
-            logits, kl = model(inputs[indices], prior_inputs[indices])
-        if capped is not None:
-            return goal_capped_corn_loss(logits, labels[indices], capped[indices]) + hparams["kl_weight"] * kl_scale * kl
-        loss = corn_loss(logits, labels[indices], len(classes)) if ordinal else torch.nn.functional.cross_entropy(logits, labels[indices], weight=class_weights, label_smoothing=hparams["label_smoothing"])
-        return loss + hparams["kl_weight"] * kl_scale * kl
-    fit_weights = recency_weights(groups.iloc[fit], sidecar.get("recency_decay"))
-    history, best_state, best_loss, stale = [], copy.deepcopy(model.state_dict()), float("inf"), 0
-    for epoch in range(epochs):
-        model.train()
-        warmup = hparams.get("kl_warmup_epochs", 0)
-        kl_scale = min(1.0, (epoch+1)/warmup) if warmup else 1.0
-        permutation = np.random.default_rng(seed+epoch).permutation(fit) if fit_weights is None else \
-            np.random.default_rng(seed+epoch).choice(fit, size=len(fit), replace=True, p=fit_weights)
-        for start in range(0, len(permutation), batch_size):
-            optimizer.zero_grad()
-            loss = loss_for(permutation[start:start+batch_size], kl_scale)
-            if not torch.isfinite(loss):
-                raise ValueError("Nonfinite training loss")
-            loss.backward()
-            if hparams.get("grad_clip_norm", 0) > 0:
-                torch.nn.utils.clip_grad_norm_(model.parameters(), hparams["grad_clip_norm"])
-            optimizer.step()
-            if step_mode == "batch" and scheduler.last_epoch < scheduler.total_steps:
+
+    def train_epochs(fit, validation, max_epochs):
+        """Train a fresh network on ``fit`` rows; with ``validation`` rows, stop early and keep the best epoch."""
+        model = build_network(kind, dims, sidecar["arch"]).to(device)
+        optimizer = build_optimizer(model.parameters(), hparams)
+        scheduler, step_mode = build_scheduler(optimizer, hparams, max_epochs, steps_per_epoch=(len(fit)+batch_size-1)//batch_size)
+        class_weights = balanced_class_weights(encoded[fit], len(classes)).to(device) if weighting == "balanced" else None
+
+        def loss_for(indices, kl_scale):
+            if prior_inputs is None:
+                logits, kl = model(inputs[indices]), 0.0
+            else:
+                logits, kl = model(inputs[indices], prior_inputs[indices])
+            if capped is not None:
+                return goal_capped_corn_loss(logits, labels[indices], capped[indices]) + hparams["kl_weight"] * kl_scale * kl
+            loss = corn_loss(logits, labels[indices], len(classes)) if ordinal else torch.nn.functional.cross_entropy(logits, labels[indices], weight=class_weights, label_smoothing=hparams["label_smoothing"])
+            return loss + hparams["kl_weight"] * kl_scale * kl
+        fit_weights = recency_weights(groups.iloc[fit], sidecar.get("recency_decay"))
+        history, best_state, best_loss, best_epoch, stale = [], copy.deepcopy(model.state_dict()), float("inf"), max_epochs - 1, 0
+        for epoch in range(max_epochs):
+            model.train()
+            warmup = hparams.get("kl_warmup_epochs", 0)
+            kl_scale = min(1.0, (epoch+1)/warmup) if warmup else 1.0
+            permutation = np.random.default_rng(seed+epoch).permutation(fit) if fit_weights is None else \
+                np.random.default_rng(seed+epoch).choice(fit, size=len(fit), replace=True, p=fit_weights)
+            for start in range(0, len(permutation), batch_size):
+                optimizer.zero_grad()
+                loss = loss_for(permutation[start:start+batch_size], kl_scale)
+                if not torch.isfinite(loss):
+                    raise ValueError("Nonfinite training loss")
+                loss.backward()
+                if hparams.get("grad_clip_norm", 0) > 0:
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), hparams["grad_clip_norm"])
+                optimizer.step()
+                if step_mode == "batch" and scheduler.last_epoch < scheduler.total_steps:
+                    scheduler.step()
+            if validation is None:
+                history.append({"epoch": epoch, "phase": "refit", "learning_rate": optimizer.param_groups[0]["lr"]})
+                if step_mode == "epoch":
+                    scheduler.step()
+                continue
+            model.eval()
+            with torch.no_grad():
+                val_loss = float(loss_for(validation, 1.0))
+            if not np.isfinite(val_loss):
+                raise ValueError("Nonfinite validation loss")
+            history.append({"epoch": epoch, "valid_loss": val_loss, "learning_rate": optimizer.param_groups[0]["lr"]})
+            if step_mode == "plateau":
+                scheduler.step(val_loss)
+            elif step_mode == "epoch":
                 scheduler.step()
+            if val_loss < best_loss:
+                best_loss, best_state, best_epoch, stale = val_loss, copy.deepcopy(model.state_dict()), epoch, 0
+            else:
+                stale += 1
+            if stale >= hparams.get("patience", 12):
+                break
+        if validation is not None:
+            model.load_state_dict(best_state)
         model.eval()
-        with torch.no_grad():
-            val_loss = float(loss_for(validation, 1.0))
-        if not np.isfinite(val_loss):
-            raise ValueError("Nonfinite validation loss")
-        history.append({"epoch": epoch, "valid_loss": val_loss, "learning_rate": optimizer.param_groups[0]["lr"]})
-        if step_mode == "plateau":
-            scheduler.step(val_loss)
-        elif step_mode == "epoch":
-            scheduler.step()
-        if val_loss < best_loss:
-            best_loss, best_state, stale = val_loss, copy.deepcopy(model.state_dict()), 0
-        else:
-            stale += 1
-        if stale >= hparams.get("patience", 12):
-            break
-    model.load_state_dict(best_state)
-    model.eval()
+        return model, history, best_epoch
+
+    model, history, best_epoch = train_epochs(fit, validation, epochs)
+    if forward:
+        model, refit_history, _ = train_epochs(train, None, best_epoch + 1)
+        history = history + refit_history
     with torch.no_grad():
         logits = model(inputs[test]) if prior_inputs is None else model(inputs[test], prior_inputs[test], sample=False)[0]
         if ordinal:
