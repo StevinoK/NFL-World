@@ -18,7 +18,7 @@ from nflsim.semantics import ISOLATED_MU_CONTEXT_V2
 from nflsim.features.goal_line import GOAL_CAPPED_MODELS, GOAL_LINE_COLUMNS, with_goal_line_inputs
 from nflsim.features.weather import WEATHER_COLUMNS as WEATHER_FRAME_COLUMNS
 from nflsim.features.training_data import ATTEMPT_MODELS, model_frame, prepare_frame
-from nflsim.models.train import cascade_metric_record, fit_network
+from nflsim.models.train import HOLDOUT_FOLDS, cascade_metric_record, fit_network
 from nflsim.configuration import TARGETS_BY_NAME, V2_MODEL_CONTEXT
 from nflsim.engine.simulation_runtime import SimulationRuntime
 
@@ -375,6 +375,9 @@ def main():
     parser.add_argument("--time-without-stoppages", action="store_true",
                         help="Train the clock model on plays not followed by a timeout or the two-minute warning "
                              "(needed for NFLSIM_TIMEOUTS)")
+    parser.add_argument("--cross-fit", action="store_true",
+                        help="Train each network once per held-out fifth of games, plus once on every game for the bundle; "
+                             "game_effects rows --cross-fit then fits the effects on every game's out-of-fold logits")
     parser.add_argument("--forward-validation", action="store_true",
                         help="Stop early on the latest training season, then refit on all of them for that many epochs")
     parser.add_argument("--recency-decay", type=float,
@@ -519,10 +522,29 @@ def main():
             metrics_for_json = cascade_metric_record(metrics)["metrics"]
             summaries.append({"model": model, "kind": kind, "evaluation": "validation", "new_metrics": metrics_for_json})
         else:
-            network, processor, probabilities, actual, classes, history, prior = fit_network(
-                reduced, target, columns, sidecar, args.epochs, args.seed,
-            )
             prefix = spec["prefix"]
+            if args.cross_fit:
+                # One network per held-out fold (its out-of-fold logits fit the game effects on every game), then the
+                # network the bundle uses, trained on every game. Metrics come from the out-of-fold predictions.
+                if kind not in {"flat", "corn"}:
+                    raise ValueError(f"{model}: --cross-fit supports flat and CORN networks only")
+                folds_out = []
+                for fold in range(HOLDOUT_FOLDS):
+                    fold_network, fold_processor, fold_probabilities, fold_actual, classes, _, _ = fit_network(
+                        reduced, target, columns, {**copy.deepcopy(sidecar), "holdout_fold": fold}, args.epochs, args.seed)
+                    torch.save(fold_network.state_dict(), output / f"{prefix}_fold{fold}_model.pt")
+                    joblib.dump(fold_processor, output / f"{prefix}_fold{fold}_preprocessor.pkl")
+                    folds_out.append((fold_probabilities, fold_actual))
+                    print(f"[fit] {model}: fold {fold} done", flush=True)
+                network, processor, _, _, classes, history, prior = fit_network(
+                    reduced, target, columns, {**sidecar, "holdout_fold": None}, args.epochs, args.seed)
+                probabilities = np.concatenate([item[0] for item in folds_out])
+                actual = np.concatenate([item[1] for item in folds_out])
+                sidecar["cross_fit_folds"] = HOLDOUT_FOLDS
+            else:
+                network, processor, probabilities, actual, classes, history, prior = fit_network(
+                    reduced, target, columns, sidecar, args.epochs, args.seed,
+                )
             torch_path = output / f"{prefix}_model.pt"
             torch.save(network.state_dict(), torch_path)
             joblib.dump(processor, output / f"{prefix}_preprocessor.pkl")
@@ -550,7 +572,7 @@ def main():
                 sidecar["row_scope"] = "attempts"
             write_json(output / f"{prefix}_arch.json", sidecar)
             metrics = metric_record(actual, probabilities, classes)
-            summaries.append({"model": model, "kind": kind, "evaluation": "test", "new_metrics": metrics,
+            summaries.append({"model": model, "kind": kind, "evaluation": "out_of_fold" if args.cross_fit else "test", "new_metrics": metrics,
                               "best_validation_loss": min((item.get("valid_loss", np.inf) for item in history), default=None)})
             record = test_comparison(model, kind, metrics)
             if record is not None:

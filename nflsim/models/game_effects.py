@@ -37,7 +37,7 @@ from nflsim.engine.model_architecture import build_network
 from nflsim.engine.simulation_runtime import SKILL_SLOT_ORDER
 from nflsim.features.goal_line import yards_available
 from nflsim.features.training_data import prepare_frame
-from nflsim.models.train import holdout_games
+from nflsim.models.train import HOLDOUT_FOLDS, game_folds, holdout_games
 from nflsim.paths import ROOT, write_json
 from nflsim.semantics import ISOLATED_MU_CONTEXT_V2
 
@@ -71,20 +71,37 @@ def load_rows(path: Path):
     return {model: ModelRows(**item) for model, item in stored["rows"].items()}, stored["extra"]
 
 
-def load_network(directory: Path, model: str, prefix: str):
+def load_network(directory: Path, model: str, prefix: str, fold: int | None = None):
+    """A refit's network; ``fold`` loads the cross-fit network that held that fold out."""
+    stem = prefix if fold is None else f"{prefix}_fold{fold}"
     sidecar = json.loads((directory / f"{prefix}_arch.json").read_text())
-    state = torch.load(directory / f"{prefix}_model.pt", map_location="cpu", weights_only=True)
+    state = torch.load(directory / f"{stem}_model.pt", map_location="cpu", weights_only=True)
     # Widths from the checkpoint (older sidecars count CORN outputs differently); CORN heads emit K-1 logits.
     width = int(state["out.weight"].shape[0])
     dims = {"input_dim": int(state["fc1.weight"].shape[1]), "output_dim": width + (1 if sidecar["kind"] == "corn" else 0)}
     network = build_network(sidecar["kind"], dims, sidecar.get("arch"))
     network.load_state_dict(state)
     network.eval().float()
-    processor = joblib.load(directory / f"{prefix}_preprocessor.pkl")
+    processor = joblib.load(directory / f"{stem}_preprocessor.pkl")
     bins = None
     if (directory / f"{prefix}_bins.csv").is_file():
         bins = pd.read_csv(directory / f"{prefix}_bins.csv")["0"].to_numpy(dtype=float)
     return sidecar, network, processor, bins
+
+
+def out_of_fold_logits(directory: Path, model: str, prefix: str, sidecar: dict, frame: pd.DataFrame) -> np.ndarray:
+    """Each row's logits from the cross-fit network that held its game's fold out."""
+    if int(sidecar.get("cross_fit_folds", 0)) != HOLDOUT_FOLDS:
+        raise ValueError(f"{model}: the refit has no cross-fit networks (fit_minimal --cross-fit)")
+    folds = game_folds(frame.game_id.to_numpy())
+    logits = None
+    for fold in range(HOLDOUT_FOLDS):
+        rows = np.flatnonzero(folds == fold)
+        _, network, processor, _ = load_network(directory, model, prefix, fold)
+        fold_logits = forward(network, transform(processor, frame.iloc[rows]))
+        logits = np.zeros((len(frame), fold_logits.shape[1])) if logits is None else logits
+        logits[rows] = fold_logits
+    return logits
 
 
 def transform(processor, frame: pd.DataFrame) -> torch.Tensor:
@@ -108,8 +125,10 @@ def encode_labels(model: str, sidecar: dict, target: pd.Series, bins: np.ndarray
     return pd.to_numeric(target).to_numpy(dtype=np.int64)
 
 
-def model_rows(directory: Path, specs: dict, prepared: pd.DataFrame, players, roster, keep=None) -> dict[str, ModelRows]:
-    """Base logits from the trained flat/CORN networks for every model's rows (optionally filtered by game)."""
+def model_rows(directory: Path, specs: dict, prepared: pd.DataFrame, players, roster, keep=None,
+               cross_fit: bool = False) -> dict[str, ModelRows]:
+    """Base logits from the trained flat/CORN networks for every model's rows (optionally filtered by game).
+    With ``cross_fit``, each row's logits come from the fold network that never saw its game."""
     from nflsim.models.fit_minimal import model_rows as build_rows
     result = {}
     for model, spec in specs.items():
@@ -118,7 +137,10 @@ def model_rows(directory: Path, specs: dict, prepared: pd.DataFrame, players, ro
             mask = keep(frame.game_id.to_numpy())
             frame, target = frame.loc[mask].reset_index(drop=True), target.loc[mask].reset_index(drop=True)
         sidecar, network, processor, bins = load_network(directory, model, spec["prefix"])
-        logits = forward(network, transform(processor, frame))
+        if cross_fit:
+            logits = out_of_fold_logits(directory, model, spec["prefix"], sidecar, frame)
+        else:
+            logits = forward(network, transform(processor, frame))
         if sidecar["kind"] == "corn":
             head, base = "corn", logits
         elif logits.shape[1] == 2:
@@ -619,7 +641,10 @@ def stage_rows(args):
     specs = refit_specs(args.model_dir)
     if not (args.output / "holdout_rows.pkl").is_file():
         prepared, players, roster = load_inputs(REFERENCE, tuple(args.seasons), args.player_table, args.team_table, args.inputs)
-        save_rows(model_rows(args.model_dir, specs, prepared, players, roster, keep=holdout_games), args.output / "holdout_rows.pkl")
+        # Cross-fit refits give out-of-fold logits for every game; otherwise only the shared held-out fifth is unseen.
+        rows = model_rows(args.model_dir, specs, prepared, players, roster,
+                          keep=None if args.cross_fit else holdout_games, cross_fit=args.cross_fit)
+        save_rows(rows, args.output / "holdout_rows.pkl", {"cross_fit": bool(args.cross_fit)})
     season = (args.eval_season, args.eval_season)
     if not (args.output / "eval_rows_new.pkl").is_file():
         prepared, players, roster = load_inputs(args.compare_bundle, season, args.player_table, args.team_table, args.inputs)
@@ -649,7 +674,9 @@ def stage_cv(args):
 
 def stage_final(args):
     output, draws = args.output, args.draws
-    data = Data(load_rows(output / "holdout_rows.pkl")[0])
+    rows, extra = load_rows(output / "holdout_rows.pkl")
+    data = Data(rows)
+    cross_fit = bool((extra or {}).get("cross_fit"))
     records = [json.loads(path.read_text()) for path in sorted(output.glob("cv_*.json"))]
     if records:
         cv = pd.DataFrame(records)
@@ -669,7 +696,9 @@ def stage_final(args):
         print(f"[temperature] {temperatures}", flush=True)
     spec = effects.export()
     spec["fit"] = {"config": args.choose, "holdout_games": len(data.games), "rows": data.rows,
-                   "seasons": list(args.seasons), "holdout": "crc32(game_id) % 5 == 0 (nflsim.models.train.holdout_games)"}
+                   "seasons": list(args.seasons),
+                   "holdout": "every game, out-of-fold logits from five cross-fit networks" if cross_fit
+                   else "crc32(game_id) % 5 == 0 (nflsim.models.train.holdout_games)"}
     write_json(output / FILE_NAME, spec)
     write_dispersion(output, "holdout_independent", data, effect_logits(None, draws, len(data.games)), draws)
     write_dispersion(output, f"holdout_{args.choose}", data, effect_logits(effects, draws, len(data.games)), draws)
@@ -714,6 +743,8 @@ def main():
     parser.add_argument("--learning-rate", type=float, default=0.05)
     parser.add_argument("--draws", type=int, default=200)
     parser.add_argument("--threads", type=int)
+    parser.add_argument("--cross-fit", action="store_true",
+                        help="rows: fit on every game's out-of-fold logits from a fit_minimal --cross-fit refit")
     parser.add_argument("--temperature", action="store_true",
                         help="cv/final: also fit one temperature per network (base logits divided by it); the bundle's "
                              "runtime applies it to the network's output layer")

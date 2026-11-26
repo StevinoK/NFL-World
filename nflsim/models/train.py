@@ -30,15 +30,23 @@ from nflsim.features.training_data import ATTEMPT_MODELS, SKILL_SLOT_ORDER, mode
 HOLDOUT_FOLDS = 5
 
 
+def game_folds(game_ids) -> np.ndarray:
+    """Each game's fold (0-4), the same for every model."""
+    return np.array([zlib.crc32(str(game).encode()) % HOLDOUT_FOLDS for game in game_ids], dtype=np.int64)
+
+
 def holdout_games(game_ids) -> np.ndarray:
     """One fixed fifth of games held out from every model, so game effects can be fit on shared unseen games."""
-    return np.array([zlib.crc32(str(game).encode()) % HOLDOUT_FOLDS == 0 for game in game_ids], dtype=bool)
+    return game_folds(game_ids) == 0
 
 
-def holdout_split(frame):
+def holdout_split(frame, fold=0):
+    """Train and test rows with ``fold`` held out; ``fold=None`` trains on every game (no test rows)."""
     if "game_id" not in frame or frame.game_id.isna().any():
         raise ValueError("Training requires nonmissing game_id for the shared holdout")
-    held = holdout_games(frame.game_id)
+    if fold is None:
+        return np.arange(len(frame)), np.zeros(0, dtype=np.int64)
+    held = game_folds(frame.game_id) == int(fold)
     if held.all() or not held.any():
         raise ValueError("Training requires games on both sides of the shared holdout")
     return np.flatnonzero(~held), np.flatnonzero(held)
@@ -92,7 +100,9 @@ def fit_network(frame, target, columns, sidecar, epochs=100, seed=42):
     groups = frame[group_column]
     if groups.nunique() < (2 if kind == "ngmm" else 3):
         raise ValueError("Training requires enough distinct groups for disjoint splits")
-    train, test = holdout_split(frame)
+    train, test = holdout_split(frame, sidecar.get("holdout_fold", 0))
+    if not len(test) and kind not in {"flat", "corn"}:
+        raise ValueError("Training on every game (cross-fitting's final network) supports flat and CORN networks only")
     ordinal_target = kind == "corn" or sidecar["dims"].get("ordinal_output", False) or sidecar["dims"].get("target_mode") == "ordinal"
     classes = sidecar["dims"].get("class_labels") or (sorted(pd.unique(target)) if ordinal_target else list(range(int(sidecar["dims"]["output_dim"]))))
     encoded = pd.Categorical(target, categories=classes).codes
@@ -249,6 +259,8 @@ def fit_network(frame, target, columns, sidecar, epochs=100, seed=42):
     if forward:
         model, refit_history, _ = train_epochs(train, None, best_epoch + 1)
         history = history + refit_history
+    if not len(test):
+        return model, processor, np.zeros((0, len(classes))), encoded[test], classes, history, prior_processor
     with torch.no_grad():
         logits = model(inputs[test]) if prior_inputs is None else model(inputs[test], prior_inputs[test], sample=False)[0]
         if ordinal:
