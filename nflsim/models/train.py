@@ -53,6 +53,18 @@ def goal_capped_corn_loss(logits, labels, capped):
     return (losses * used).sum() / used.sum().clamp_min(1)
 
 
+def recency_weights(game_ids, decay):
+    """Sampling probabilities for training rows that fall by `decay` per season before the latest one (None: uniform).
+    Each epoch then draws as many rows as there are, with replacement, which weights the loss the same in expectation."""
+    if decay is None:
+        return None
+    if not 0 < float(decay) <= 1:
+        raise ValueError("recency_decay must be in (0, 1]")
+    seasons = pd.Series(game_ids).astype(str).str.slice(0, 4).astype(int).to_numpy()
+    weights = float(decay) ** (seasons.max() - seasons)
+    return weights / weights.sum()
+
+
 def fit_network(frame, target, columns, sidecar, epochs=100, seed=42):
     if not isinstance(seed, (int, np.integer)) or not 0 <= seed < 2**32:
         raise ValueError("seed must be an integer in [0, 2**32)")
@@ -169,12 +181,14 @@ def fit_network(frame, target, columns, sidecar, epochs=100, seed=42):
             return goal_capped_corn_loss(logits, labels[indices], capped[indices]) + hparams["kl_weight"] * kl_scale * kl
         loss = corn_loss(logits, labels[indices], len(classes)) if ordinal else torch.nn.functional.cross_entropy(logits, labels[indices], weight=class_weights, label_smoothing=hparams["label_smoothing"])
         return loss + hparams["kl_weight"] * kl_scale * kl
+    fit_weights = recency_weights(groups.iloc[fit], sidecar.get("recency_decay"))
     history, best_state, best_loss, stale = [], copy.deepcopy(model.state_dict()), float("inf"), 0
     for epoch in range(epochs):
         model.train()
         warmup = hparams.get("kl_warmup_epochs", 0)
         kl_scale = min(1.0, (epoch+1)/warmup) if warmup else 1.0
-        permutation = np.random.default_rng(seed+epoch).permutation(fit)
+        permutation = np.random.default_rng(seed+epoch).permutation(fit) if fit_weights is None else \
+            np.random.default_rng(seed+epoch).choice(fit, size=len(fit), replace=True, p=fit_weights)
         for start in range(0, len(permutation), batch_size):
             optimizer.zero_grad()
             loss = loss_for(permutation[start:start+batch_size], kl_scale)

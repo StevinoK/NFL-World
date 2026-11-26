@@ -17,7 +17,16 @@ from nflsim.engine.simulation_runtime import Player, Team
 _RUNTIMES = {}
 
 
+PAIRED_SEEDS_ENV = "NFLSIM_PAIRED_SEEDS"
+
+
 def simulation_seed(bundle_hash, run_id, game_id, simulation, seed):
+    """The random seed of one simulation. With NFLSIM_PAIRED_SEEDS=1 it leaves out the bundle and run, so two builds
+    play each simulation from the same draws and their per-game differences carry less simulation noise."""
+    import os
+
+    if os.environ.get(PAIRED_SEEDS_ENV) == "1":
+        return int(canonical_hash(["paired", game_id, int(simulation), int(seed)])[:8], 16)
     return int(canonical_hash([bundle_hash, run_id, game_id, int(simulation), int(seed)])[:8], 16)
 
 

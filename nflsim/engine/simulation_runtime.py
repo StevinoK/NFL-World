@@ -310,6 +310,10 @@ class SimulationRuntime:
         )
         self._sync_hierarchical_runtime_schema()
         self.game_effects = GameEffects.load(self.data_dir)
+        strength = getattr(self.game_effects, "strength", None)
+        if strength:  # a fitted team term reads its ratings from the team rows even when no network uses them
+            self.required_team_feature_columns = sorted(
+                set(self.required_team_feature_columns) | set(strength["offense"]) | set(strength["defense"]))
 
     def _record_schema_issue(self, message: str) -> None:
         if message not in self.schema_issues:
@@ -1062,6 +1066,22 @@ class Team:
         return random.choice(filtered) if filtered else None
 
 
+SCORING_EXTRAS_ENV = "NFLSIM_SCORING_EXTRAS"
+_SCORING_EXTRAS: Dict[str, Any] = {}
+
+
+def scoring_extras() -> Optional[Dict[str, Any]]:
+    """Two-point tries and safeties (an experiment): on only when NFLSIM_SCORING_EXTRAS names a settings JSON."""
+    import os
+
+    path = os.environ.get(SCORING_EXTRAS_ENV)
+    if not path:
+        return None
+    if path not in _SCORING_EXTRAS:
+        _SCORING_EXTRAS[path] = json.loads(Path(path).read_text(encoding="utf-8"))
+    return _SCORING_EXTRAS[path]
+
+
 CLOCK_FIXES_ENV = "NFLSIM_CLOCK_FIXES"
 _CLOCK_FIXES: Dict[str, Any] = {}
 
@@ -1101,6 +1121,14 @@ def kneel_chance(fixes: Dict[str, Any], quarter: int, clock: float, down: int, l
             if yards_to_goal <= cell["yards_upper"]:
                 return _binned_rate(cell["by_seconds"], clock)
     return 0.0
+
+
+def go_for_two_chance(extras: Dict[str, Any], margin: float, late: bool) -> float:
+    """How often a team goes for two after a touchdown, by its margin after the six points and the quarter."""
+    table = extras["go_for_two"]["late" if late else "early"]
+    limit = int(extras["max_margin"])
+    key = str(int(np.clip(round(margin), -limit, limit)))
+    return float(table.get(key, table["default"]))
 
 
 class Play:
@@ -1877,6 +1905,9 @@ class Game:
             "fg_made": float(self.diagnostics["kick_attempts"]["fg_made"]),
             "pat_attempts": float(self.diagnostics["kick_attempts"]["pat_attempt"]),
             "pat_made": float(self.diagnostics["kick_attempts"]["pat_made"]),
+            **({"two_point_tries": float(self.diagnostics.get("two_point", {}).get("tries", 0)),
+                "two_point_made": float(self.diagnostics.get("two_point", {}).get("made", 0)),
+                "safeties": float(self.diagnostics.get("safeties", 0))} if scoring_extras() is not None else {}),
             **({"kneels": float(self.diagnostics.get("kneels", 0)),
                 "overtimes": float(self.diagnostics.get("overtimes", 0))} if clock_fixes() is not None else {}),
             "rush_plays": float(self.diagnostics["yardage"]["rush"]["plays"]),
@@ -2313,12 +2344,23 @@ class Game:
                         self.switch_possession(70)
                     continue
                 if play.touchdown:
-                    pat = Play(0, 0, 0, game=self)
-                    pat.simulate(self.possession, self.defense, is_pat=True)
-                    self.plays.append(pat)
-                    self.play_number += 1
-                    if live_pbp:
-                        print(self._format_play_line(pat, self.quarter, self.clock))
+                    extras = scoring_extras()
+                    margin = self.possession.score - self.defense.score
+                    if extras is not None and random.random() < go_for_two_chance(extras, margin, self.quarter >= 4):
+                        passing = random.random() < extras["pass_share"]
+                        made = random.random() < extras["pass_success" if passing else "rush_success"]
+                        counts = self.diagnostics.setdefault("two_point", {"tries": 0, "made": 0})
+                        counts["tries"] += 1
+                        if made:
+                            counts["made"] += 1
+                            self.possession.score += 2
+                    else:
+                        pat = Play(0, 0, 0, game=self)
+                        pat.simulate(self.possession, self.defense, is_pat=True)
+                        self.plays.append(pat)
+                        self.play_number += 1
+                        if live_pbp:
+                            print(self._format_play_line(pat, self.quarter, self.clock))
                     if self.kickoff_model:
                         self.kickoff(self.possession)
                     else:
@@ -2361,6 +2403,13 @@ class Game:
                 self.yardline += play.yards_gained
                 if net_yards != play.yards_gained:
                     self.yardline = float(np.clip(self.yardline + (net_yards - play.yards_gained), 0, 100))
+                extras = scoring_extras()
+                if extras is not None and self.yardline <= 0 and not (play.punt or play.turnover):
+                    # Safety: the defense scores two and gets a free kick; it starts at its own 40 or so.
+                    self.defense.score += 2
+                    self.diagnostics["safeties"] = self.diagnostics.get("safeties", 0) + 1
+                    self.switch_possession(100 - int(extras.get("safety_free_kick_start", 40)))
+                    continue
                 if net_yards >= self.distance or auto_first_down:
                     self.down = 1
                     self.distance = 10
@@ -2545,8 +2594,9 @@ class Game:
             if not isinstance(rng, np.random.Generator):
                 rng = np.random.default_rng(np.random.randint(0, 2**31 - 1))
             game_draw = effects.draw_game(rng)
-            for team in (self.team1, self.team2):
-                shifts = effects.team_shifts(game_draw, rng, getattr(self, "rain", 0.0))
+            for team, opponent in ((self.team1, self.team2), (self.team2, self.team1)):
+                strength = effects.strength_inputs(team.attributes, opponent.attributes) if getattr(effects, "strength", None) else None
+                shifts = effects.team_shifts(game_draw, rng, getattr(self, "rain", 0.0), strength)
                 team.model_latents.update(shifts)
                 team.target_latent = shifts.get("target", team.target_latent)
                 team.rusher_latent = shifts.get("rusher", team.rusher_latent)

@@ -73,3 +73,19 @@ def test_runtime_draws_match_exported_spec():
     assert shifts["rush"].shape == (3,) and np.allclose(shifts["rush"], shifts["rush"][0])
     assert shifts["play"].shape == (4,)
     assert np.allclose(expand_shift("corn", 5, np.array([0.5])), 0.5)
+
+
+def test_strength_term_shifts_by_ratings_and_leaves_draws_unchanged():
+    data = Data(synthetic_rows(games=40))
+    spec = fit(data, 1, 1, True, iterations=5, log_every=0).export()
+    plain = GameEffects(spec)
+    spec = {**spec, "strength": {"offense": ["pass_off"], "defense": ["pass_def"], "mean": [0.0, 0.0], "scale": [0.1, 0.2]},
+            "models": {model: {**entry, "strength": [[0.5, -1.0]] * len(entry["bias"])} for model, entry in spec["models"].items()}}
+    rated = GameEffects(spec)
+    z = rated.strength_inputs({"pass_off": 0.1}, {"pass_def": float("nan")})
+    assert np.allclose(z, [1.0, 0.0])  # standardized; a missing rating sits at the mean
+    assert plain.strength_inputs({}, {}) is None
+    game = plain.draw_game(np.random.default_rng(0))
+    before = plain.team_shifts(game, np.random.default_rng(1))
+    after = rated.team_shifts(game, np.random.default_rng(1), strength=z)
+    assert np.allclose(after["comp"][1] - before["comp"][1], 0.5)  # same random draws, shifted by the term

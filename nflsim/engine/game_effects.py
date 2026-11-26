@@ -61,6 +61,34 @@ class GameEffects:
                 "rain": np.asarray(entry.get("rain", np.zeros(size)), dtype=np.float64).reshape(size),
             }
         self.has_rain = any("rain" in entry for entry in spec["models"].values())
+        # Optional team-strength term: fixed coefficients on standardized team ratings, own offense and opponent defense
+        # (an experiment; bundles without it are unchanged).
+        strength = spec.get("strength")
+        self.strength = None
+        if strength:
+            self.strength = {"offense": list(strength["offense"]), "defense": list(strength["defense"]),
+                             "mean": np.asarray(strength["mean"], dtype=np.float64),
+                             "scale": np.asarray(strength["scale"], dtype=np.float64)}
+            columns = len(self.strength["mean"])
+            for model, entry in spec["models"].items():
+                self.models[model]["strength"] = np.asarray(
+                    entry.get("strength", np.zeros((len(entry["bias"]), columns))), dtype=np.float64).reshape(len(entry["bias"]), columns)
+
+    def strength_inputs(self, team_attributes, opponent_attributes) -> Optional[np.ndarray]:
+        """The standardized ratings of the strength term for one offense against one defense (missing ratings sit at the
+        mean), or None when the bundle has no strength term."""
+        if self.strength is None:
+            return None
+        def value(attributes, column):
+            try:
+                number = float(attributes.get(column, np.nan))
+            except (TypeError, ValueError):
+                number = np.nan
+            return number
+        raw = np.array([value(team_attributes, column) for column in self.strength["offense"]]
+                       + [value(opponent_attributes, column) for column in self.strength["defense"]], dtype=np.float64)
+        standardized = (raw - self.strength["mean"]) / self.strength["scale"]
+        return np.where(np.isfinite(standardized), standardized, 0.0)
 
     @classmethod
     def load(cls, directory: Path) -> Optional["GameEffects"]:
@@ -72,7 +100,8 @@ class GameEffects:
     def draw_game(self, rng: np.random.Generator) -> np.ndarray:
         return rng.standard_normal(self.game_dims)
 
-    def team_shifts(self, game_draw: np.ndarray, rng: np.random.Generator, rain: float = 0.0) -> Dict[str, np.ndarray]:
+    def team_shifts(self, game_draw: np.ndarray, rng: np.random.Generator, rain: float = 0.0,
+                    strength: Optional[np.ndarray] = None) -> Dict[str, np.ndarray]:
         """Draw one team's effects for a game and return each model's raw-logit shift."""
         rain = min(float(rain), RAIN_CAP)
         team_draw = rng.standard_normal(self.team_dims)
@@ -80,5 +109,7 @@ class GameEffects:
         for model, entry in self.models.items():
             private = rng.standard_normal(entry["private"].shape[0])
             shift = entry["bias"] + entry["game"] @ game_draw + entry["team"] @ team_draw + entry["private"] * private + entry["rain"] * rain
+            if strength is not None and "strength" in entry:
+                shift = shift + entry["strength"] @ strength
             shifts[model] = expand_shift(entry["head"], entry["width"], shift)
         return shifts

@@ -31,6 +31,10 @@
     "detail": "Goal-line models plus ten models averaged over ten training seeds, which steadies team ratings. Refreshed for 2026.",
     "name": "Seed-averaged models"
   },
+  "b8d92e9c1051c90fde17be6d0af92b8b1dcdd8bd133003f97fd7381be5b05dab": {
+    "detail": "Pruned CRPS-scored build with quarterback value and starts-with-team kept, and team passing inputs (EPA rate, passing Massey, pass rate over expected) tilted toward each game's starter; forecast-trained with rain term.",
+    "name": "QB-aware passing inputs"
+  },
   "e7ffa1071c8b3b4154dbcf07afe311b4feab2862740ee8e67fdd8c6c1d84c57d": {
     "detail": "Forecast-trained models with rain term; each play model drops inputs whose shuffle cost under 1 game-clustered standard error on held-out games, yardage models scored by CRPS with goal-line censoring.",
     "name": "Pruned inputs, CRPS-scored"
@@ -62,6 +66,10 @@
   "pv-pruned-20261110": {
     "detail": "Forecast-trained models with rain term, retrained without the inputs that did not help on held-out games.",
     "name": "Pruned inputs"
+  },
+  "pv-qbaware-20261117": {
+    "detail": "Pruned CRPS-scored build with quarterback value and starts-with-team kept, and team passing inputs (EPA rate, passing Massey, pass rate over expected) tilted toward each game's starter; forecast-trained with rain term.",
+    "name": "QB-aware passing inputs"
   },
   "pv-seedavg-20261105": {
     "detail": "Packaged before the weekly refresh, so it cannot simulate upcoming games.",

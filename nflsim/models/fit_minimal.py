@@ -371,6 +371,8 @@ def main():
     parser.add_argument("--inputs", type=Path, default=INPUTS, help="Directory with pbp.parquet and roster.parquet")
     parser.add_argument("--dropped-inputs", type=Path,
                         help=f"JSON {{model: [inputs]}} to leave out; copied into the output as {DROPPED_INPUTS_FILE}")
+    parser.add_argument("--recency-decay", type=float,
+                        help="Weight training plays by this factor per season before the latest (stored in each sidecar)")
     args = parser.parse_args()
     output = output_dir(args.output_dir)
     if args.dropped_inputs is not None:
@@ -388,6 +390,9 @@ def main():
         specs = game_effects_specs(specs, model_manifest)
     specs = apply_dropped_inputs(specs, dropped)
     specs = {model: specs[model] for model in (args.models or specs)}
+    if args.recency_decay is not None:
+        for spec in specs.values():
+            spec["sidecar"]["recency_decay"] = float(args.recency_decay)
     if args.summary_only:
         summaries, comparison = [], []
         for model, spec in specs.items():
