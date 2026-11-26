@@ -11,7 +11,7 @@ from nflsim.configuration import v2_optional_context_columns
 from nflsim.features.player_value import PV_COLUMNS, PV_DEFENSE_COLUMNS, PV_OFFENSE_COLUMNS
 from nflsim.ridge.metrics import (
     TARGETS, RidgeConfig, RidgeTarget, build_design, build_game_context,
-    build_target_rows, fit_coefficients, recency_weights,
+    build_target_rows, fit_coefficients, posterior_sds, recency_weights, _row_weights,
 )
 from nflsim.features.weather import WEATHER_COLUMNS
 from nflsim.semantics import (
@@ -20,6 +20,9 @@ from nflsim.semantics import (
 )
 
 
+# Team-table columns that copy the opponent's own column in the same game.
+OPPONENT_ALIASES = {"opp_def_pass_epa_rate": "def_pass_epa_rate", "opp_def_rush_epa_rate": "def_rush_epa_rate",
+                    "opp_pass_epa_rate": "epa_rate", "opp_rushing_epa_rate": "rushing_epa_rate"}
 TEAM_ALIASES = {"LA": "LAR", "STL": "LAR", "SD": "LAC", "OAK": "LV", "JAC": "JAX", "WSH": "WAS"}
 
 
@@ -77,8 +80,15 @@ def build_estimates(
     predict_seasons: Iterable[int] | None = None,
     player_value: pd.DataFrame | None = None,
     feature_semantics: str = ISOLATED_MU_V1,
+    predict_weeks: set[tuple[int, int]] | None = None,
+    coefficient_sds: list[dict] | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """Use strictly earlier fits; unavailable warm-up metrics are omitted and context is NaN.
+
+    ``predict_weeks`` limits the build to those (season, week) pairs. With a ``coefficient_sds`` list, each fit is
+    solved with its Gaussian posterior (``nflsim.ridge.metrics.posterior_sds``) and every published rating appends
+    one row to the list: game_id, kind (team/player), entity, column, and the coefficient it reads (fit, block,
+    label) with its posterior SD. Columns that read the same coefficient share it, so a draw can move them together.
 
     Published skill/defense metrics are isolated mus (``isolated_mu_v1``): the raw signed
     ridge subject/defense coefficient from the joint fit. Intercept, position, PV and venue/offense
@@ -121,6 +131,8 @@ def build_estimates(
     player_records, team_records, context_records, diagnostics = [], [], [], list(roster_diagnostics)
     for season, week in sorted(set(zip(games.season, games.week))):
         if prediction_seasons is not None and int(season) not in prediction_seasons:
+            continue
+        if predict_weeks is not None and (int(season), int(week)) not in predict_weeks:
             continue
         if int(week) == 1:
             print(f"[estimates] season {int(season)}", flush=True)
@@ -167,11 +179,26 @@ def build_estimates(
                 if not (weights > 0).any():
                     diagnostics.append({"season": int(season), "week": int(week), "metric": metric, "reason": "no_positive_history_weights", "availability": "unavailable_warmup", "count": 1})
                     continue
-                coefficients = fit_coefficients(
-                    rows, build_design(rows, target.scope), config, int(season), int(week))
-                lookup = coefficients.set_index(["block", "label"]).coefficient.to_dict()
+                design = build_design(rows, target.scope)
+                sd_lookup = {}
+                if coefficient_sds is None:
+                    coefficients = fit_coefficients(rows, design, config, int(season), int(week))
+                    lookup = coefficients.set_index(["block", "label"]).coefficient.to_dict()
+                else:
+                    entities = np.flatnonzero(np.isin(design.blocks, ["subject", "defense", "offense_team"]))
+                    beta, sds = posterior_sds(design.matrix, rows["rate"].to_numpy(float),
+                                              _row_weights(rows, int(season), int(week), config), design.penalty(config),
+                                              rows["count"].to_numpy(float), entities)
+                    lookup = dict(zip(zip(design.blocks, design.labels), beta))
+                    sd_lookup = dict(zip(zip(design.blocks[entities], design.labels[entities]), sds))
                 def effect(block, label):
                     return float(lookup.get((block, str(label)), 0.0))
+
+                def note_sd(game_id, kind, entity, column, block, label, metric=metric):
+                    key = (block, str(label))
+                    if coefficient_sds is not None and key in sd_lookup:
+                        coefficient_sds.append({"game_id": str(game_id), "kind": kind, "entity": str(entity), "column": column,
+                                                "fit": metric, "block": block, "label": str(label), "sd": float(sd_lookup[key])})
                 pv_terms = PV_OFFENSE_COLUMNS if side == "subject" else PV_DEFENSE_COLUMNS
                 pv_beta = {column: effect("player_value", column) for column in pv_terms} if player_value is not None else {}
                 for column, beta in pv_beta.items():
@@ -196,6 +223,7 @@ def build_estimates(
                     else:
                         record["team"] = entity
                         team_records.append(record)
+                    note_sd(row.game_id, "player" if keys is current_players else "team", entity, metric, block, entity)
                     if (block, entity) not in lookup:
                         diagnostics.append({"season": int(season), "week": int(week), "metric": metric, "reason": "unseen_entity_prior", "entity": entity, "count": 1})
                 if side == "subject" and target.scope == "player":
@@ -203,12 +231,15 @@ def build_estimates(
                         for block, suffix, label in (("venue", "venue", row.venue), ("offense_team", "offense", row.team)):
                             name = f"ridge_{target.name}_{suffix}_effect"
                             context[(row.game_id, row.team)][name] = effect(block, label)
+                            if block == "offense_team":
+                                note_sd(row.game_id, "team", row.team, name, block, label)
                             if (block, str(label)) not in lookup:
                                 diagnostics.append({"season": int(season), "week": int(week), "metric": metric, "reason": f"unseen_{block}_zero_effect", "entity": str(label), "count": 1})
                 if v2 and side == "subject":
                     for row in current.itertuples():
                         record = context[(row.game_id, row.team)]
                         record[defense_mu_column(target.name)] = effect("defense", row.team)
+                        note_sd(row.game_id, "team", row.team, defense_mu_column(target.name), "defense", row.team)
                         record[context_available_column(defense_mu_column(target.name))] = 1.0
                         record[context_available_column(ridge_venue_column(target.name))] = 1.0
                         if target.scope == "team":
@@ -217,13 +248,16 @@ def build_estimates(
                             record[context_available_column(offense_column(target.name))] = 1.0
                             record[ridge_venue_column(target.name)] = effect("venue", row.venue)
                             record[offense_column(target.name)] = effect("offense_team", row.team)
+                            note_sd(row.game_id, "team", row.team, offense_column(target.name), "offense_team", row.team)
                         if target.defense_output is None or target.scope == "team":
                             record[opponent_defense_column(target.name)] = effect("defense", row.opponent)
+                            note_sd(row.game_id, "team", row.team, opponent_defense_column(target.name), "defense", row.opponent)
                             record[context_available_column(opponent_defense_column(target.name))] = 1.0
                         if target.defense_output is not None:
                             team_records.append({"game_id": row.game_id, "game_date": row.game_date, "source": target.defense_output,
                                                  "average": effect("defense", row.team), "bayes_estimate_mean": effect("defense", row.team),
                                                  "estimand": feature_semantics, "team": str(row.team)})
+                            note_sd(row.game_id, "team", row.team, target.defense_output, "defense", row.team)
                     if target.defense_output is not None:
                         diagnostics.append({"season": int(season), "week": int(week), "metric": target.defense_output, "side": "defense",
                                             "reason": "same_subject_fit_defense_block", "entity": metric, "count": 1})
@@ -277,7 +311,7 @@ def wide_tables(players: pd.DataFrame, teams: pd.DataFrame, context: pd.DataFram
         team_wide["game_id"] = team_wide.game_id.astype(str)
         team_wide = team_wide.drop(columns=[column for column in PV_COLUMNS if column in team_wide]).merge(
             values, on=["game_id", "team"], how="left", validate="one_to_one")
-    aliases = {"opp_def_pass_epa_rate": "def_pass_epa_rate", "opp_def_rush_epa_rate": "def_rush_epa_rate", "opp_pass_epa_rate": "epa_rate", "opp_rushing_epa_rate": "rushing_epa_rate"}
+    aliases = OPPONENT_ALIASES
     game_teams = team_wide.groupby("game_id").team.agg(list)
     opponent = [next((team for team in game_teams[row.game_id] if team != row.team), None) for row in team_wide.itertuples()]
     indexed = team_wide.set_index(["game_id", "team"])

@@ -13,6 +13,7 @@ from nflsim.engine.batching import Batcher
 from nflsim.paths import canonical_hash
 from nflsim.sim.runtime import RidgeGame, RidgeRuntime
 from nflsim.engine.simulation_runtime import Player, Team
+from nflsim.sim import strength_draws
 
 _RUNTIMES = {}
 
@@ -60,6 +61,10 @@ def simulate_one(task, runtime, simulation):
     else:
         home = Team(task["home_team"], players(task["home_players"]), "home", pd.Series(task["team_features"][task["home_team"]]), runtime)
         away = Team(task["away_team"], players(task["away_players"]), "away", pd.Series(task["team_features"][task["away_team"]]), runtime)
+    strength = strength_draws.settings()
+    if strength is not None:
+        # Before RidgeGame copies opponent ratings into each team's context, so the copies move with them.
+        strength_draws.apply(task["game_id"], (home, away), runtime.rng, strength)
     game = RidgeGame(away, home, str(task["roof"]), runtime)
     game.simulate_game()
     identity = {"game_id": task["game_id"], "simulation": int(simulation)}

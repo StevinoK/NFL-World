@@ -15,6 +15,7 @@ from typing import Callable, Iterable, Literal
 
 import numpy as np
 import pandas as pd
+import scipy.linalg
 import scipy.sparse as sp
 from scipy.sparse.linalg import spsolve
 
@@ -393,6 +394,58 @@ def solve_ridge(
     normal = (design.T @ weighted + sp.diags(penalty)).tocsc()
     rhs = weighted.T @ target[active]
     return np.asarray(spsolve(normal, rhs), dtype=float)
+
+
+def _posterior_factor(matrix, target, weights, penalty, counts):
+    active = np.flatnonzero(weights > 0)
+    design = matrix[active]
+    w = weights[active]
+    normal = (design.T @ sp.diags(w) @ design + sp.diags(penalty)).toarray()
+    factor = scipy.linalg.cho_factor(normal, lower=True)
+    beta = scipy.linalg.cho_solve(factor, design.T @ (w * target[active]))
+    residual = target[active] - design @ beta
+    per_row = w if counts is None else np.asarray(counts, dtype=float)[active]
+    sigma2 = float(np.sum(per_row * residual ** 2) / len(active))
+    return factor, beta, sigma2
+
+
+def ridge_posterior(
+    matrix: sp.csr_matrix,
+    target: np.ndarray,
+    weights: np.ndarray,
+    penalty: np.ndarray,
+    counts: np.ndarray | None = None,
+) -> tuple[np.ndarray, np.ndarray, float]:
+    """The ridge solution with its Gaussian posterior: coefficients, their covariance and the noise scale.
+
+    Read as a Bayesian model, row i says ``rate_i ~ N(x_i b, sigma2 / w_i)`` (w = recency weight x plays) and each
+    coefficient has prior ``b_j ~ N(0, sigma2 / penalty_j)``. Then ``Cov(b | data) = sigma2 A^-1`` with
+    ``A = X'WX + diag(penalty)``. sigma2 is the per-play noise: the mean of ``counts x residual^2`` over the rows
+    (``counts`` defaults to ``weights``; pass the plays per row so recency discounting doesn't shrink it).
+    A new game of n plays predicted from row x has variance ``x Cov x' + sigma2 / n``.
+    """
+    factor, beta, sigma2 = _posterior_factor(matrix, target, weights, penalty, counts)
+    return beta, sigma2 * scipy.linalg.cho_solve(factor, np.eye(len(penalty))), sigma2
+
+
+def posterior_sds(
+    matrix: sp.csr_matrix,
+    target: np.ndarray,
+    weights: np.ndarray,
+    penalty: np.ndarray,
+    counts: np.ndarray | None,
+    indices: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """The ridge coefficients and the posterior SDs of the coefficients at ``indices`` (see ``ridge_posterior``),
+    without forming the whole covariance."""
+    factor, beta, sigma2 = _posterior_factor(matrix, target, weights, penalty, counts)
+    indices = np.asarray(indices, dtype=int)
+    if not len(indices):
+        return beta, np.zeros(0)
+    unit = np.zeros((len(penalty), len(indices)))
+    unit[indices, np.arange(len(indices))] = 1.0
+    variances = sigma2 * np.einsum("ij,ij->j", unit, scipy.linalg.cho_solve(factor, unit))
+    return beta, np.sqrt(variances)
 
 
 def regime_multiplier(rows: pd.DataFrame, pred_season: int, pred_week: int, config: RidgeConfig) -> np.ndarray:

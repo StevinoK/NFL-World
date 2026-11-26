@@ -408,6 +408,7 @@ simulations (a Modal worker needs it set in its own environment):
 | `NFLSIM_SCORING_EXTRAS=<settings.json>` | Two-point tries (by margin and quarter) and safeties |
 | `NFLSIM_CLOCK_FIXES=<settings.json>` or `off` | Overtime and kneel-downs; on by default from `config/clock_fixes.json` |
 | `NFLSIM_PAIRED_SEEDS=1` | Seeds that leave out the bundle and run, so two builds play each simulation from the same draws |
+| `NFLSIM_STRENGTH_DRAWS=<settings.json>` | Draws each ridge rating once per simulated game from its posterior: `{"sd_table": "<csv>", "scale": 1.0}`, table from `python -m nflsim.ridge.uncertainty` (below) |
 | `NFLSIM_MODEL_PLAY_CALLS=1` | The play model's kick and punt calls stand on every down (end-of-half field goals, going for it on 4th down); only field goals beyond 70 yards are redrawn. Off: the older overrides force a field goal on 4th-and-2+ within 54 yards and turn early-down kicks and punts into passes and runs |
 
 Rules in `nflsim/engine/rules.py` apply to every bundle: a sack is not a pass attempt (as in NFL box scores),
@@ -415,6 +416,23 @@ an interception in the end zone is a touchback unless returned past the 20, a mi
 spot of the kick or the 20, and return and defensive touchdowns kick a try instead of counting 7.
 `joint_outcomes` subtracts sacks from QB attempts for runs simulated before that change (it reads their attempt
 diagnostics), so old baselines stay comparable.
+
+**Rating uncertainty.** Every simulated game uses the bundle's ratings as if they were exact, so scores spread
+less than the forecast errors. `python -m nflsim.ridge.uncertainty` refits the ridge for the weeks you will simulate,
+with the bundle's inputs and semantics, and writes each published rating's posterior SD and the coefficient it
+reads (bundles are unchanged):
+
+```powershell
+& $py -m nflsim.ridge.uncertainty --pbp <inputs>/pbp.parquet --schedule <inputs>/schedule.parquet `
+  --roster <inputs>/roster.parquet --player-value <bundle>/player_value.csv --feature-semantics <bundle semantics> `
+  --season 2026 --weeks 1-7 --output nflsim/outputs/strength_sd/2026_w1-7.csv
+```
+
+On 2023-25 team pass/rush EPA (`docs/analysis/2026-11-accuracy/exp_strength_uncertainty.py`), the ridge's
+predictive variance is about right (var z 0.93 / 0.92); for pass EPA the rating part is a little large (variance
+scale 0.71), so start with `"scale": 0.85`. Draws are independent across fits, so ratings that err together
+(a team's EPA and CPOE) are drawn apart; read the score SD and mean squared z from `forecast_scores` before raising
+the scale.
 
 Training options in `fit_minimal`: `--forward-validation` stops each network early on the latest training season
 (where rule and play-calling drift shows) instead of a random fifth of games, then retrains on every training

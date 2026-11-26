@@ -293,3 +293,29 @@ def test_only_recent_four_seasons_of_ftn_are_eligible_after_first_observation():
     selected, _ = model_frame("int", plays, pd.DataFrame(), pd.DataFrame())
     assert set(selected.game_id.str[:4]) == {"2022", "2023", "2024"}
     assert plays.loc[plays.game_id.str[:4].le("2021"), "ridge_interception_worthy_venue_effect"].isna().all()
+
+@pytest.mark.parametrize("semantics", ["isolated_mu_v1", "isolated_mu_context_v2"])
+def test_coefficient_sds_follow_the_published_ratings(semantics):
+    pbp, games, roster = fixture()
+    params = {"yac_bayes": {}, "yac_oe_allowed": {}}
+    plain = build_estimates(pbp, games, roster, params, [TARGETS[0]], feature_semantics=semantics)
+    sds = []
+    posterior = build_estimates(pbp, games, roster, params, [TARGETS[0]], feature_semantics=semantics, coefficient_sds=sds)
+    # Same ratings either way (one solve is sparse LU, the other Cholesky).
+    merged = plain[0].merge(posterior[0], on=["player_id", "game_id", "source"])
+    assert np.allclose(merged.average_x, merged.average_y, atol=1e-8)
+    sds = pd.DataFrame(sds)
+    assert (sds.sd > 0).all() and set(sds.kind) <= {"player", "team"}
+    published = sds[sds.kind.eq("player")].merge(plain[0], left_on=["game_id", "entity", "column"],
+                                                  right_on=["game_id", "player_id", "source"])
+    assert len(published) == len(sds[sds.kind.eq("player")]) and published.block.eq("subject").all()
+    if semantics == "isolated_mu_context_v2":
+        # The defense output, the team's own defense mu and the opponent's context read the same coefficient.
+        defense = sds[sds.block.eq("defense")]
+        assert {"yac_oe_allowed", "ridge_yac_oe_defense_mu"} <= set(defense.column)
+        for _, rows in defense.groupby(["game_id", "label"]):
+            assert rows.sd.nunique() == 1
+    limited = []
+    only = build_estimates(pbp, games, roster, params, [TARGETS[0]], feature_semantics=semantics,
+                           predict_weeks={(2024, 4)}, coefficient_sds=limited)
+    assert set(only[0].game_id) == {"2024_04_B_A"} and set(pd.DataFrame(limited).game_id) == {"2024_04_B_A"}
