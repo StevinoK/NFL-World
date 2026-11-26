@@ -78,8 +78,11 @@ def load_network(directory: Path, model: str, prefix: str, fold: int | None = No
     state = torch.load(directory / f"{stem}_model.pt", map_location="cpu", weights_only=True)
     # Widths from the checkpoint (older sidecars count CORN outputs differently); CORN heads emit K-1 logits.
     width = int(state["out.weight"].shape[0])
-    dims = {"input_dim": int(state["fc1.weight"].shape[1]), "output_dim": width + (1 if sidecar["kind"] == "corn" else 0)}
-    network = build_network(sidecar["kind"], dims, sidecar.get("arch"))
+    if sidecar["kind"] == "multitask":  # a shared-trunk head; its sidecar has the full shape
+        network = build_network("multitask", sidecar["dims"], sidecar.get("arch"))
+    else:
+        dims = {"input_dim": int(state["fc1.weight"].shape[1]), "output_dim": width + (1 if sidecar["kind"] == "corn" else 0)}
+        network = build_network(sidecar["kind"], dims, sidecar.get("arch"))
     network.load_state_dict(state)
     network.eval().float()
     processor = joblib.load(directory / f"{stem}_preprocessor.pkl")
@@ -141,7 +144,7 @@ def model_rows(directory: Path, specs: dict, prepared: pd.DataFrame, players, ro
             logits = out_of_fold_logits(directory, model, spec["prefix"], sidecar, frame)
         else:
             logits = forward(network, transform(processor, frame))
-        if sidecar["kind"] == "corn":
+        if sidecar["kind"] == "corn" or sidecar.get("head") == "corn":
             head, base = "corn", logits
         elif logits.shape[1] == 2:
             head, base = "binary", logits[:, 1:] - logits[:, :1]

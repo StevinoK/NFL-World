@@ -236,6 +236,40 @@ class HierarchicalLatentGameModel(nn.Module):
         return logits, kl_div
 
 
+class MultitaskHead(nn.Module):
+    """One play model of a shared-trunk network (nflsim.models.multitask).
+
+    Its input is the model's own preprocessed row. The columns every model shares (``common_index``) go through the
+    trunk, which all heads share in training; the head reads the trunk's embedding plus the model's other columns
+    (``own_index``). Saved per model with a copy of the trunk, so the runtime loads it like any other network; the
+    last layer is ``out``, so temperatures apply to it the usual way.
+    """
+
+    def __init__(self, dims: Dict[str, Any], arch: Optional[Dict[str, Any]] = None, trunk: Optional[nn.Module] = None):
+        super().__init__()
+        arch = dict(arch or {})
+        common, own = [int(value) for value in dims["common_index"]], [int(value) for value in dims["own_index"]]
+        self.input_width = int(dims["input_dim"])
+        self.register_buffer("common_index", torch.tensor(common, dtype=torch.long))
+        self.register_buffer("own_index", torch.tensor(own, dtype=torch.long))
+        embedding = int(arch.get("embedding_dim", 64))
+        dropout = float(arch.get("dropout", 0.1))
+        activation = arch.get("activation", "relu")
+        trunk_arch = {"hidden_dims": list(arch.get("trunk_hidden_dims", [256, 128])), "dropout": dropout, "activation": activation}
+        self.trunk = trunk if trunk is not None else ConfigurableMLP(len(common), embedding, trunk_arch)
+        layers: List[nn.Module] = []
+        previous = embedding + len(own)
+        for width in arch.get("head_hidden_dims", [64]):
+            layers += [nn.Linear(previous, int(width)), build_activation(activation), nn.Dropout(dropout)]
+            previous = int(width)
+        self.head = nn.Sequential(*layers)
+        self.out = nn.Linear(previous, int(dims["output_dim"]))
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        shared = torch.relu(self.trunk(x[:, self.common_index]))
+        return self.out(self.head(torch.cat([shared, x[:, self.own_index]], dim=1)))
+
+
 def build_network(kind: str, dims: Dict[str, Any], arch: Optional[Dict[str, Any]] = None) -> nn.Module:
     if kind == "ngmm":
         architecture = NGMMArchitecture(
@@ -260,6 +294,8 @@ def build_network(kind: str, dims: Dict[str, Any], arch: Optional[Dict[str, Any]
         return CornModel(int(dims["input_dim"]), int(dims["output_dim"]), arch)
     if kind == "flat":
         return GameModel(int(dims["input_dim"]), int(dims["output_dim"]), arch)
+    if kind == "multitask":
+        return MultitaskHead(dims, arch)
     raise ValueError(f"Unsupported network kind: {kind}")
 
 

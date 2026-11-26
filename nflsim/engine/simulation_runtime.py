@@ -23,6 +23,7 @@ except Exception:
 from nflsim.engine.model_architecture import (
     DEFAULT_FLAT_ARCH,
     HierarchicalLatentGameModel,
+    MultitaskHead,
     arch_sidecar_path,
     build_network,
     infer_arch_from_state_dict,
@@ -689,7 +690,10 @@ class SimulationRuntime:
                         f"assuming {DEFAULT_FLAT_ARCH['activation']} activation"
                     )
                 network: nn.Module
-                if (sidecar or {}).get("kind") == "ngmm":
+                if (sidecar or {}).get("kind") == "multitask":
+                    # A head of a shared-trunk network (nflsim.models.multitask); its sidecar has the full shape.
+                    network = build_network("multitask", sidecar["dims"], sidecar.get("arch"))
+                elif (sidecar or {}).get("kind") == "ngmm":
                     dims = (sidecar or {}).get("dims", {})
                     network = build_network("ngmm", dims, (sidecar or {}).get("arch"))
                     prior_proc_path = self.data_dir / f"{model}_prior_preprocessor.pkl"
@@ -768,8 +772,9 @@ class SimulationRuntime:
                 processor = self.processor.get(model)
                 if processor is not None and hasattr(processor, "get_feature_names_out") and not isinstance(network, (HierarchicalLatentGameModel, NGMMModel)):
                     processor_width = int(len(processor.get_feature_names_out()))
-                    if processor_width != int(state_dict["fc1.weight"].shape[1]):
-                        message = f"{model}: preprocessor width {processor_width} != checkpoint width {int(state_dict['fc1.weight'].shape[1])}"
+                    checkpoint_width = int(getattr(network, "input_width", 0) or state_dict["fc1.weight"].shape[1])
+                    if processor_width != checkpoint_width:
+                        message = f"{model}: preprocessor width {processor_width} != checkpoint width {checkpoint_width}"
                         self._record_schema_issue(message)
                         if self.strict_schema:
                             raise ValueError(message)
@@ -785,6 +790,8 @@ class SimulationRuntime:
             expected_width = network.stage3_model.fc1.in_features
         elif isinstance(network, HierarchicalLatentGameModel):
             expected_width = network.fc1.in_features - network.latent_dim
+        elif isinstance(network, MultitaskHead):
+            expected_width = network.input_width
         else:
             expected_width = network.fc1.in_features if hasattr(network, "fc1") else network.fixed[0].in_features
         values = values.astype(np.float32)
