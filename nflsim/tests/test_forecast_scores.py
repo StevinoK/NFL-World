@@ -27,3 +27,24 @@ def test_variogram_score_sees_the_wrong_correlation():
 
 def test_fair_crps_of_a_point_mass_is_the_absolute_error():
     assert np.isclose(crps(np.full(50, 3.0), 5.0), 2.0)
+
+
+def test_game_scores_include_the_joint_points_energy_score(tmp_path):
+    import pandas as pd
+
+    from nflsim.sim.forecast_scores import game_scores
+
+    rng = np.random.default_rng(3)
+    shared = rng.normal(size=2000)
+    sims = {"together": np.c_[shared, shared + 0.2 * rng.normal(size=2000)],
+            "apart": np.c_[shared, -shared + 0.2 * rng.normal(size=2000)]}
+    scored = {}
+    for label, draws in sims.items():
+        run = tmp_path / label
+        (run / "raw_games").mkdir(parents=True)
+        pd.DataFrame({"game_id": ["g"], "week": [1], "actual_home_score": [30], "actual_away_score": [30]}).to_csv(
+            run / "backtest_2025_results.csv", index=False)
+        pd.DataFrame({"home": 24 + 7 * draws[:, 0], "away": 24 + 7 * draws[:, 1]}).to_csv(run / "raw_games" / "g.csv", index=False)
+        scored[label] = game_scores(run).iloc[0]
+    # Both teams beat their means: only the forecast that has them move together scores well on both at once.
+    assert scored["together"].energy_points < scored["apart"].energy_points

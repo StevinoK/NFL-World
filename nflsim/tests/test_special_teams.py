@@ -47,6 +47,13 @@ def _game(starts):
     game.team1, game.team2 = _Team("A", "home"), _Team("B", "away")
     game.quarter, game.clock, game.dome, game.down, game.distance = 1, 900, "outdoors", 1, 10
     game.diagnostics = {"special_teams": {"kickoffs": 0, "kickoff_start_sum": 0.0, "kickoff_return_tds": 0, "punt_return_tds": 0}}
+    game.return_td_points = {id(game.team1): 0, id(game.team2): 0}
+
+    def made_pat(scoring, opponent, live_pbp=False):
+        scoring.score += 1
+        return 1
+
+    game.try_after_touchdown = made_pat
     draws = iter(starts)
     game.special_teams_values = lambda kicking, receiving: {}
     game.sample_special_teams = lambda model, state, values, team: next(draws)
@@ -58,5 +65,6 @@ def test_kickoff_return_touchdown_scores_and_kicks_back():
     game.kickoff(game.team1)
     # B returns the first kick for a TD, then kicks back; A starts at its 31.
     assert game.team2.score == 7 and game.team2.stats["defensive_touchdown"] == 1
+    assert game.return_td_points[id(game.team2)] == 7
     assert game.possession is game.team1 and game.defense is game.team2 and game.yardline == 31.0
     assert game.diagnostics["special_teams"]["kickoffs"] == 2

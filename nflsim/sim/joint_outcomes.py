@@ -20,6 +20,7 @@ from scipy.stats import norm
 
 from nflsim.features.bayesian_history import load_pbp_data
 from nflsim.paths import ROOT, output_dir, write_json
+from nflsim.sim.proper_scores import crps
 
 SLOT_STATS = {
     "QB1": ["passing_yards", "pass_attempts", "completions", "passing_touchdowns", "interceptions", "sacks", "rushing_yards"],
@@ -68,11 +69,29 @@ def with_win(frame, keys):
     return frame.merge(points[[*keys, "team"]].assign(**{"team.win": win.astype(float)}), on=[*keys, "team"])
 
 
+def sacks_counted_as_attempts(run) -> bool:
+    """Whether a run was simulated before sacks stopped counting as pass attempts. Its attempt diagnostics say so:
+    attempts then fell short of dropbacks by scrambles alone, rather than by scrambles and sacks."""
+    path = Path(run) / "backtest_2025_attempt_diagnostics.csv"
+    if not path.is_file():
+        return False
+    diagnostics = pd.read_csv(path)
+    needed = {"pass_attempt_delta", "pass_outcome_scramble", "pass_outcome_sack"}
+    if not needed <= set(diagnostics):
+        return False
+    with_sacks = diagnostics[diagnostics.pass_outcome_sack > 0]
+    return bool(len(with_sacks)) and bool(((with_sacks.pass_attempt_delta + with_sacks.pass_outcome_scramble).abs() < 1e-9).all())
+
+
 def simulated(run):
     """Per (game, team, simulation) outcomes and the player id in each slot."""
     frames, slots = [], []
+    old_attempts = sacks_counted_as_attempts(run)
     for path in sorted((run / "raw_games").glob("*_players.csv")):
         players = pd.read_csv(path, usecols=lambda column: column in {"game_id", "team", "simulation", "position", "player_id", *{s for stats in SLOT_STATS.values() for s in stats}})
+        if old_attempts:
+            # Box-score attempts, as the real stats below count them.
+            players["pass_attempts"] = players["pass_attempts"] - players["sacks"]
         scores = pd.read_csv(path.with_name(path.name.replace("_players", "")))
         points = pd.concat([scores[["game_id", "simulation", "home_team", "home"]].set_axis(["game_id", "simulation", "team", "team.points"], axis=1),
                             scores[["game_id", "simulation", "away_team", "away"]].set_axis(["game_id", "simulation", "team", "team.points"], axis=1)])
@@ -115,12 +134,6 @@ def observed(run, slots, pbp):
         players = slots[slots.position.eq(slot)].merge(stats, on=["game_id", "player_id"], how="left")
         frame = frame.merge(players[["game_id", "team", *names]].rename(columns={name: f"{slot}.{name}" for name in names}), on=["game_id", "team"], how="left")
     return with_opponent(frame, ["game_id"])
-
-
-def crps(samples, value):
-    samples = np.sort(samples)
-    n = len(samples)
-    return float(np.mean(np.abs(samples-value)) - np.sum((2*np.arange(1, n+1)-n-1)*samples)/n**2)
 
 
 def score(sims, actual, seed=0):

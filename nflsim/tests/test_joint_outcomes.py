@@ -54,8 +54,20 @@ def test_joint_outcomes_recover_simulated_dependence(tmp_path):
     assert set(ranked.kind) == {"dispersion", "dependence"}
 
 
-def test_crps_matches_definition():
+def test_crps_is_the_fair_estimator():
     rng = np.random.default_rng(1)
     x = rng.normal(size=40)
-    brute = np.mean(np.abs(x-0.3)) - 0.5*np.mean(np.abs(x[:, None]-x[None, :]))
+    # Distinct pairs only, so the score doesn't depend on the number of simulations.
+    brute = np.mean(np.abs(x-0.3)) - 0.5*np.abs(x[:, None]-x[None, :]).sum()/(len(x)*(len(x)-1))
     assert np.isclose(joint_outcomes.crps(x, 0.3), brute)
+
+
+def test_runs_that_counted_sacks_as_attempts_are_detected(tmp_path):
+    old, new = tmp_path / "old", tmp_path / "new"
+    for run, delta in ((old, [-1, -2, 0]), (new, [-3, -5, 0])):
+        run.mkdir()
+        pd.DataFrame({"pass_attempt_delta": delta, "pass_outcome_scramble": [1, 2, 0],
+                      "pass_outcome_sack": [2, 3, 0]}).to_csv(run / "backtest_2025_attempt_diagnostics.csv", index=False)
+    assert joint_outcomes.sacks_counted_as_attempts(old)
+    assert not joint_outcomes.sacks_counted_as_attempts(new)
+    assert not joint_outcomes.sacks_counted_as_attempts(tmp_path / "missing")

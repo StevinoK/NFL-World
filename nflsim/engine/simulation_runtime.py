@@ -32,6 +32,7 @@ from nflsim.engine.model_architecture import (
 from nflsim.engine.ngmm_model import NGMMModel
 from nflsim.engine.defaults import artifact_dir
 from nflsim.engine.game_effects import GameEffects
+from nflsim.engine import rules
 from nflsim.features.goal_line import GOAL_CAPPED_MODELS, GOAL_LINE_COLUMNS, goal_line_inputs
 
 
@@ -1145,6 +1146,7 @@ class Play:
         self.punt = False
         self.game = game
         self.field_goal_attempt = False
+        self.field_goal_made = False
         self.type = "other"
 
     def simulate(self, offense: Team, defense: Team, is_pat: bool = False) -> None:
@@ -1196,7 +1198,12 @@ class Play:
         # special-teams decisions. This keeps core model behavior while preventing
         # unrealistic early-down punts/field goals and improving 4th-down realism.
         play_type = np.random.choice(["kick", "pass", "punt", "run"], p=play_selection[0, :])
-        if not is_pat:
+        if not is_pat and rules.model_play_calls():
+            # Experiment: the play model decides kicks and punts on every down; only impossible calls are redrawn.
+            if rules.impossible_play_call(play_type, self.down, self.yardline):
+                play_type = np.random.choice(
+                    list(rules.PLAY_TYPES), p=rules.without_play_type(play_selection[0, :], play_type))
+        elif not is_pat:
             if self.down < 4 and play_type in {"kick", "punt"}:
                 pass_prob = float(play_selection[0, 1])
                 run_prob = float(play_selection[0, 3])
@@ -1278,8 +1285,7 @@ class Play:
                 if good:
                     self.game.diagnostics["kick_attempts"]["fg_made"] += 1
                     offense.stats["kick_made"] += 1
-                    # The kick travels from 7 yards behind the line, and the posts are 10 yards past the goal line.
-                    distance = 117 - self.game.yardline
+                    distance = rules.field_goal_distance(self.game.yardline)
                     if distance <= 39:
                         offense.stats["fg 0-39"] += 1
                     elif distance <= 49:
@@ -1287,10 +1293,12 @@ class Play:
                     else:
                         offense.stats["fg 50-59"] += 1  # DraftKings pays 50+ yards the same, so this bucket includes 60+.
                     offense.score += 3
+                    self.field_goal_made = True
                     self.description = f"{offense.name} made the kick"
                 else:
                     self.description = f"{offense.name} missed the kick"
-                    self.yards_gained -= 8
+                    # Ends at the receiving team's start: the spot of the kick, or its 20.
+                    self.yards_gained = (100 - rules.missed_field_goal_start(self.yardline)) - self.yardline
                 self.field_goal_attempt = True
             return
 
@@ -1492,19 +1500,21 @@ class Play:
                 defense.stats["interception"] += 1
                 self.game.diagnostics["yardage"]["air"]["plays"] += 1
                 self.game.diagnostics["yardage"]["air"]["yards"] += float(air_yards)
-                if air_yards + self.yardline >= 100:
-                    air_yards = 80 - (air_yards + self.yardline)
                 self.yards_gained = air_yards
                 self.turnover = True
                 qb.stats["interceptions"] += 1
                 qb.stats["air_yards"] += air_yards
                 self.description = f"{qb.name} threw an interception!"
                 self._apply_return_yards(gc, defense)
+                if air_yards + self.yardline >= 100 and not self.defensive_touchdown:
+                    # Picked off in the end zone: a touchback unless the return gets past the 20.
+                    start = rules.end_zone_turnover_start(100 - (self.yardline + self.yards_gained))
+                    self.yards_gained = (100 - start) - self.yardline
 
             elif outcome == 0:
                 self.type = "sack"
                 self.game.diagnostics["pass_outcomes"]["sack"] += 1
-                qb.stats["pass_attempts"] += 1
+                # NFL box scores (and nflverse player stats) don't count a sack as a pass attempt.
                 qb.stats["sacks"] += 1
                 defense.stats["sack"] += 1
                 if "sack_yards" in runtime.model_dict:
@@ -1766,6 +1776,8 @@ class Game:
         self.split_punts = {"punt_distance", "punt_return"} <= set(runtime.model_dict)
         self.halftime_pending = False
         self.opening_receiver: Optional[Team] = None
+        # Points (touchdown plus try) each team scored on returns and defense, left out of DraftKings points allowed.
+        self.return_td_points: Dict[int, int] = {id(team1): 0, id(team2): 0}
         # Overtime (with clock fixes on, the default): who received first, whose possessions are over, and who has the ball.
         self.overtime_pending = False
         self.overtime_first: Optional[Team] = None
@@ -1876,11 +1888,11 @@ class Game:
         )
         rushing_attempts = float(sum(player.stats.get("rushing_attempts", 0) for player in all_players))
         pass_outcomes_total = float(sum(self.diagnostics["pass_outcomes"].values()))
-        # By design this is NOT expected to be 0: `pass_outcomes_total` counts every play the
-        # selector routed to "pass" (sack/complete/interception/scramble/incomplete), but real
-        # NFL stat convention excludes scrambles from `pass_attempts` (a scramble is a QB run,
-        # not a passing attempt). So pass_attempt_delta should equal -scramble_count once sacks
-        # are correctly counted (see qb.stats["pass_attempts"] += 1 in the sack branch above).
+        # By design this is NOT expected to be 0: `pass_outcomes_total` counts every dropback
+        # (sack/complete/interception/scramble/incomplete), while NFL box scores count neither
+        # scrambles (QB runs) nor sacks as pass attempts. So pass_attempt_delta should equal
+        # -(scramble_count + sack_count). Runs made before this change counted sacks as
+        # attempts, where it equals -scramble_count.
         pass_attempt_delta = float(pass_attempts - pass_outcomes_total)
         return {
             "play_call_pass": float(self.diagnostics["play_calls"]["pass"]),
@@ -2005,8 +2017,9 @@ class Game:
             self.diagnostics["special_teams"]["kickoff_start_sum"] += min(start, 100.0)
             self.possession, self.defense = receiving, kicking
             if start >= 100:
-                receiving.score += 7
+                receiving.score += 6
                 receiving.stats["defensive_touchdown"] += 1
+                self.return_td_points[id(receiving)] += 6 + self.try_after_touchdown(receiving, kicking)
                 self.diagnostics["special_teams"]["kickoff_return_tds"] += 1
                 kicking = receiving
                 continue
@@ -2335,7 +2348,7 @@ class Game:
                 if live_pbp:
                     print(self._format_play_line(play, quarter, clock))
                 if play.field_goal_attempt:
-                    if play.yards_gained != 0:
+                    if not play.field_goal_made:
                         self.switch_possession(self.yardline + play.yards_gained)
                         continue
                     if self.kickoff_model:
@@ -2344,30 +2357,16 @@ class Game:
                         self.switch_possession(70)
                     continue
                 if play.touchdown:
-                    extras = scoring_extras()
-                    margin = self.possession.score - self.defense.score
-                    if extras is not None and random.random() < go_for_two_chance(extras, margin, self.quarter >= 4):
-                        passing = random.random() < extras["pass_share"]
-                        made = random.random() < extras["pass_success" if passing else "rush_success"]
-                        counts = self.diagnostics.setdefault("two_point", {"tries": 0, "made": 0})
-                        counts["tries"] += 1
-                        if made:
-                            counts["made"] += 1
-                            self.possession.score += 2
-                    else:
-                        pat = Play(0, 0, 0, game=self)
-                        pat.simulate(self.possession, self.defense, is_pat=True)
-                        self.plays.append(pat)
-                        self.play_number += 1
-                        if live_pbp:
-                            print(self._format_play_line(pat, self.quarter, self.clock))
+                    self.try_after_touchdown(self.possession, self.defense, live_pbp=live_pbp)
                     if self.kickoff_model:
                         self.kickoff(self.possession)
                     else:
                         self.switch_possession(self._sample_post_score_switch_yardline())
                     break
                 if play.defensive_touchdown:
-                    self.defense.score += 7
+                    self.defense.score += 6
+                    points = 6 + self.try_after_touchdown(self.defense, self.possession, live_pbp=live_pbp)
+                    self.return_td_points[id(self.defense)] += points
                     if self.kickoff_model:
                         self.kickoff(self.defense)
                         continue
@@ -2472,11 +2471,34 @@ class Game:
             self.print_game_summary(summary, prefix=summary_prefix)
         return summary
 
+    def try_after_touchdown(self, scoring: Team, opponent: Team, live_pbp: bool = False) -> int:
+        """The try by the team that just scored a touchdown, offensive or not: a kicked PAT, or with
+        NFLSIM_SCORING_EXTRAS sometimes a two-point try. Returns the points it added."""
+        before = scoring.score
+        extras = scoring_extras()
+        margin = scoring.score - opponent.score
+        if extras is not None and random.random() < go_for_two_chance(extras, margin, self.quarter >= 4):
+            passing = random.random() < extras["pass_share"]
+            made = random.random() < extras["pass_success" if passing else "rush_success"]
+            counts = self.diagnostics.setdefault("two_point", {"tries": 0, "made": 0})
+            counts["tries"] += 1
+            if made:
+                counts["made"] += 1
+                scoring.score += 2
+        else:
+            pat = Play(0, 0, 0, game=self)
+            pat.simulate(scoring, opponent, is_pat=True)
+            self.plays.append(pat)
+            self.play_number += 1
+            if live_pbp:
+                print(self._format_play_line(pat, self.quarter, self.clock))
+        return scoring.score - before
+
     def update_points_allowed(self) -> None:
-        """Each defense's points allowed for DraftKings: the opponent's score less the touchdowns the opponent's own
-        defense and return teams scored (counted with the extra point), since those came off this team's offense."""
+        """Each defense's points allowed for DraftKings: the opponent's score less the points (touchdown and try) the
+        opponent's own defense and return teams scored, since those came off this team's offense."""
         for team, opponent in ((self.team1, self.team2), (self.team2, self.team1)):
-            team.stats["pa"] = opponent.score - 7 * opponent.stats.get("defensive_touchdown", 0)
+            team.stats["pa"] = opponent.score - self.return_td_points.get(id(opponent), 0)
 
     @staticmethod
     def _starting_qb(team: Team) -> Optional[Player]:

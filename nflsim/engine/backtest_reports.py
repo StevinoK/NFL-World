@@ -357,7 +357,12 @@ class GameBacktester:
         recv_yards = _group_sum(pbp, "receiver_player_id", "receiving_yards", "receiving_yards")
         pass_tds = _group_sum(pbp, "passer_player_id", "pass_touchdown", "passing_tds")
         rush_tds = _group_sum(pbp, "rusher_player_id", "rush_touchdown", "rushing_tds")
-        pass_attempts = _group_sum(pbp, "passer_player_id", "pass_attempt", "attempts")
+        if {"pass_attempt", "sack"}.issubset(pbp.columns):
+            # nflverse's pass_attempt includes sacks; box-score attempts (and the simulator) don't.
+            pbp["box_pass_attempt"] = pbp["pass_attempt"].fillna(0) * (1 - pbp["sack"].fillna(0))
+            pass_attempts = _group_sum(pbp, "passer_player_id", "box_pass_attempt", "attempts")
+        else:
+            pass_attempts = _group_sum(pbp, "passer_player_id", "pass_attempt", "attempts")
         pass_completions = _group_sum(pbp, "passer_player_id", "complete_pass", "completions")
         recs = _group_sum(pbp, "receiver_player_id", "complete_pass", "receptions")
         ints = _group_sum(pbp, "passer_player_id", "interception", "interceptions")
@@ -904,12 +909,23 @@ class GameBacktester:
             "mean_sim_pass_attempts": float(attempt_frame["sim_pass_attempts"].mean()) if "sim_pass_attempts" in attempt_frame.columns else None,
             "mean_sim_rushing_attempts": float(attempt_frame["sim_rushing_attempts"].mean()) if "sim_rushing_attempts" in attempt_frame.columns else None,
             "mean_pass_attempt_delta": float(attempt_frame["pass_attempt_delta"].mean()) if "pass_attempt_delta" in attempt_frame.columns else None,
-            # True invariant: pass_attempt_delta should equal -pass_outcome_scramble (scrambles
-            # are QB rushes, correctly excluded from pass_attempts) now that sacks are counted
-            # into qb.stats["pass_attempts"]. A nonzero residual after removing the expected
-            # scramble offset indicates a real accounting bug.
+            # True invariant: pass_attempt_delta should equal -(scrambles + sacks), since neither is a
+            # pass attempt in an NFL box score. Runs simulated before sacks stopped counting as attempts
+            # satisfy -scrambles instead; a row matching neither is a real accounting bug.
             "invariant_violations": (
-                int(((attempt_frame["pass_attempt_delta"] + attempt_frame.get("pass_outcome_scramble", 0)).abs() > 0).sum())
+                int((
+                    ((attempt_frame["pass_attempt_delta"] + attempt_frame.get("pass_outcome_scramble", 0)
+                      + attempt_frame.get("pass_outcome_sack", 0)).abs() > 0)
+                    & ((attempt_frame["pass_attempt_delta"] + attempt_frame.get("pass_outcome_scramble", 0)).abs() > 0)
+                ).sum())
+                if "pass_attempt_delta" in attempt_frame.columns
+                else None
+            ),
+            "sacks_counted_as_attempts_rows": (
+                int((
+                    (attempt_frame["pass_attempt_delta"] + attempt_frame.get("pass_outcome_scramble", 0)).abs().eq(0)
+                    & pd.Series(attempt_frame.get("pass_outcome_sack", 0), index=attempt_frame.index).gt(0)
+                ).sum())
                 if "pass_attempt_delta" in attempt_frame.columns
                 else None
             ),

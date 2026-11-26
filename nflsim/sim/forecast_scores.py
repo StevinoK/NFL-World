@@ -1,6 +1,7 @@
 """Proper scores for backtest runs, compared game by game.
 
-Per game: Brier score of the home win probability, CRPS of the spread (home minus away) and of the total.
+Per game: Brier score of the home win probability, CRPS of the spread (home minus away) and of the total, and the
+energy score of the two teams' points together (energy_points), which also rewards getting their dependence right.
 Per team-game: energy score and variogram score (order 1/2) of the joint forecast of the team's stat line: points,
 rushing attempts and yards, the QB1 passing line, and the RB1, WR1, WR2 and TE1 lines (nflsim.sim.joint_outcomes picks
 the slots and the actual stats). Every stat is divided by one fixed scale, its standard deviation across all team-games
@@ -18,34 +19,13 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from scipy.spatial.distance import pdist
 
 from nflsim.features.bayesian_history import load_pbp_data
 from nflsim.paths import output_dir
 from nflsim.sim.joint_outcomes import observed, simulated
+from nflsim.sim.proper_scores import crps, energy_score, variogram_score
 
-SCORES = ["brier", "crps_spread", "crps_total", "energy", "variogram"]
-
-
-def crps(samples: np.ndarray, value: float) -> float:
-    """Fair (unbiased in the sample count) CRPS estimate."""
-    samples = np.sort(np.asarray(samples, float))
-    n = len(samples)
-    spread = np.sum((2 * np.arange(1, n + 1) - n - 1) * samples) / (n * (n - 1))
-    return float(np.mean(np.abs(samples - value)) - spread)
-
-
-def energy_score(draws: np.ndarray, actual: np.ndarray) -> float:
-    """Fair energy score: E|X - y| - E|X - X'| / 2 over distinct sample pairs."""
-    n = len(draws)
-    first = np.linalg.norm(draws - actual, axis=1).mean()
-    return float(first - pdist(draws).sum() / (n * (n - 1)))
-
-
-def variogram_score(draws: np.ndarray, actual: np.ndarray, order: float = 0.5) -> float:
-    left, right = np.triu_indices(draws.shape[1], 1)
-    expected = (np.abs(draws[:, left] - draws[:, right]) ** order).mean(axis=0)
-    return float(((np.abs(actual[left] - actual[right]) ** order - expected) ** 2).sum())
+SCORES = ["brier", "crps_spread", "crps_total", "energy_points", "energy", "variogram"]
 
 
 def game_scores(run: Path) -> pd.DataFrame:
@@ -63,7 +43,10 @@ def game_scores(run: Path) -> pd.DataFrame:
         outcome = 1.0 if actual_spread > 0 else 0.0 if actual_spread < 0 else 0.5
         rows.append({"game_id": record["game_id"], "week": record["week"], "brier": float((home_win - outcome) ** 2),
                      "crps_spread": crps(spread, actual_spread),
-                     "crps_total": crps(total, record["actual_home_score"] + record["actual_away_score"])})
+                     "crps_total": crps(total, record["actual_home_score"] + record["actual_away_score"]),
+                     # Both teams' points together, so the home/away dependence counts (unlike spread and total alone).
+                     "energy_points": energy_score(sims[["home", "away"]].to_numpy(float),
+                                                   np.array([record["actual_home_score"], record["actual_away_score"]], float))})
     return pd.DataFrame(rows)
 
 

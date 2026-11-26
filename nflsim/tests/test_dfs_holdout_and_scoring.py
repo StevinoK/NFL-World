@@ -46,9 +46,9 @@ def test_yardage_bonuses_start_at_the_threshold():
 def test_points_allowed_removes_the_opponents_return_touchdowns():
     home = SimpleNamespace(score=24, stats={"defensive_touchdown": 1})
     away = SimpleNamespace(score=10, stats={"defensive_touchdown": 0})
-    Game.update_points_allowed(SimpleNamespace(team1=home, team2=away))
-    # Home allowed the away team's 10; away allowed 24 less the 7 that home's defense scored.
-    assert home.stats["pa"] == 10 and away.stats["pa"] == 17
+    Game.update_points_allowed(SimpleNamespace(team1=home, team2=away, return_td_points={id(home): 8, id(away): 0}))
+    # Home allowed the away team's 10; away allowed 24 less the 8 (touchdown and two-point try) home's defense scored.
+    assert home.stats["pa"] == 10 and away.stats["pa"] == 16
 
 
 def test_name_keys_ignore_first_name_periods_everywhere():

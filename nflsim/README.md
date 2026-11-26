@@ -398,6 +398,24 @@ in a `player_stats_wide.csv`. Skill slots for training, backtests and the dashbo
 `nflsim.features.slots.rank_slots`; empty slots get zero usage shares.
 Home/rest coefficients and optional teammate effects are not added as new inputs
 in this initial version. Existing home/rest variables remain in the model inputs.
+## Experiment switches
+
+Simulator experiments are off unless an environment variable turns them on in the process that runs the
+simulations (a Modal worker needs it set in its own environment):
+
+| Variable | Effect |
+| --- | --- |
+| `NFLSIM_SCORING_EXTRAS=<settings.json>` | Two-point tries (by margin and quarter) and safeties |
+| `NFLSIM_CLOCK_FIXES=<settings.json>` or `off` | Overtime and kneel-downs; on by default from `config/clock_fixes.json` |
+| `NFLSIM_PAIRED_SEEDS=1` | Seeds that leave out the bundle and run, so two builds play each simulation from the same draws |
+| `NFLSIM_MODEL_PLAY_CALLS=1` | The play model's kick and punt calls stand on every down (end-of-half field goals, going for it on 4th down); only field goals beyond 70 yards are redrawn. Off: the older overrides force a field goal on 4th-and-2+ within 54 yards and turn early-down kicks and punts into passes and runs |
+
+Rules in `nflsim/engine/rules.py` apply to every bundle: a sack is not a pass attempt (as in NFL box scores),
+an interception in the end zone is a touchback unless returned past the 20, a missed field goal goes over at the
+spot of the kick or the 20, and return and defensive touchdowns kick a try instead of counting 7.
+`joint_outcomes` subtracts sacks from QB attempts for runs simulated before that change (it reads their attempt
+diagnostics), so old baselines stay comparable.
+
 ## Seed-averaged models
 
 A network's team-level predictions move with its random seed about as much as with a real model change.
