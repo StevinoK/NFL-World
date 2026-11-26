@@ -1083,6 +1083,36 @@ def scoring_extras() -> Optional[Dict[str, Any]]:
     return _SCORING_EXTRAS[path]
 
 
+TIMEOUTS_ENV = "NFLSIM_TIMEOUTS"
+_TIMEOUTS: Dict[str, Any] = {}
+
+
+def timeout_settings() -> Optional[Dict[str, Any]]:
+    """Timeouts and the two-minute warning (an experiment): on only when NFLSIM_TIMEOUTS names a settings JSON
+    from nflsim.sim.timeout_settings. The bundle's clock model must be trained without timeout-stopped plays
+    (fit_minimal --time-without-stoppages), or their stops would be counted twice."""
+    import os
+
+    path = os.environ.get(TIMEOUTS_ENV)
+    if not path:
+        return None
+    if path not in _TIMEOUTS:
+        _TIMEOUTS[path] = json.loads(Path(path).read_text(encoding="utf-8"))
+    return _TIMEOUTS[path]
+
+
+def timeout_window(quarter: int, clock: float) -> str:
+    if quarter in (2, 4) and clock <= 120:
+        return "half_last2"
+    if quarter == 4 and clock <= 300:
+        return "q4_last5"
+    return "other"
+
+
+def margin_bucket(margin: float) -> str:
+    return "down9+" if margin <= -9 else "down1-8" if margin < 0 else "tied" if margin == 0 else "up1-8" if margin < 9 else "up9+"
+
+
 CLOCK_FIXES_ENV = "NFLSIM_CLOCK_FIXES"
 _CLOCK_FIXES: Dict[str, Any] = {}
 
@@ -1788,6 +1818,17 @@ class Game:
         self.split_punts = {"punt_distance", "punt_return"} <= set(runtime.model_dict)
         self.halftime_pending = False
         self.opening_receiver: Optional[Team] = None
+        timeouts = timeout_settings()
+        self.timeouts_left: Optional[Dict[int, int]] = None
+        if timeouts is not None:
+            scope = getattr(runtime, "time_row_scope", None)
+            if scope is None and getattr(runtime, "data_dir", None) is not None:
+                arch = Path(runtime.data_dir) / "time_arch.json"
+                scope = json.loads(arch.read_text()).get("row_scope") if arch.exists() else None
+            if scope != "without_stoppages":
+                raise ValueError("NFLSIM_TIMEOUTS needs a clock model trained without timeout-stopped plays "
+                                 "(fit_minimal --time-without-stoppages)")
+            self.timeouts_left = {id(team1): int(timeouts["per_half"]), id(team2): int(timeouts["per_half"])}
         self.drives: Dict[int, List[Dict[str, Any]]] = {}
         self.current_drive: Optional[Dict[str, Any]] = None
         # Points (touchdown plus try) each team scored on returns and defense, left out of DraftKings points allowed.
@@ -1936,6 +1977,8 @@ class Game:
                 "onside_tries": float(self.diagnostics.get("onside", {}).get("tries", 0)),
                 "onside_recovered": float(self.diagnostics.get("onside", {}).get("recovered", 0)),
                 "safeties": float(self.diagnostics.get("safeties", 0))} if scoring_extras() is not None else {}),
+            **({"timeouts": float(self.diagnostics.get("timeouts", 0)),
+                "two_minute_warnings": float(self.diagnostics.get("two_minute_warnings", 0))} if self.timeouts_left is not None else {}),
             **({"kneels": float(self.diagnostics.get("kneels", 0)),
                 "overtimes": float(self.diagnostics.get("overtimes", 0))} if clock_fixes() is not None else {}),
             "rush_plays": float(self.diagnostics["yardage"]["rush"]["plays"]),
@@ -2152,6 +2195,33 @@ class Game:
         self.clock -= time_elapsed
         if self.clock <= 0:
             self.advance_quarter()
+        return time_elapsed
+
+    def stop_clock(self, play: "Play", quarter: int, clock_before: float) -> None:
+        """With NFLSIM_TIMEOUTS: the two-minute warning stops a clock that ran through 2:00, and after a play whose
+        clock keeps running the defense, or else the offense, may call a timeout, which leaves only the play's own
+        seconds off the clock."""
+        if getattr(self, "timeouts_left", None) is None or self.quarter != quarter:
+            return
+        settings = timeout_settings()
+        if quarter in (2, 4) and clock_before > 120 > self.clock:
+            self.clock = 120
+            self.diagnostics["two_minute_warnings"] = self.diagnostics.get("two_minute_warnings", 0) + 1
+            return
+        if play.type not in {"complete_pass", "rush", "sack"} or play.touchdown or play.turnover:
+            return
+        window = timeout_window(quarter, self.clock)
+        margin = self.possession.score - self.defense.score
+        for team, side, own_margin in ((self.defense, "defense", -margin), (self.possession, "offense", margin)):
+            if self.timeouts_left[id(team)] <= 0:
+                continue
+            if random.random() < float(settings["policy"][f"{window}|{side}|{margin_bucket(own_margin)}"]):
+                self.timeouts_left[id(team)] -= 1
+                quantiles = settings["play_seconds"]
+                seconds = float(np.interp(random.random(), np.linspace(0, 1, len(quantiles)), quantiles))
+                self.clock = max(self.clock, clock_before - seconds)
+                self.diagnostics["timeouts"] = self.diagnostics.get("timeouts", 0) + 1
+                return
 
     def game_seconds(self) -> float:
         """Seconds left in the game as the play data records them: regulation counts down to 0, overtime from 600."""
@@ -2161,6 +2231,10 @@ class Game:
 
     def advance_quarter(self) -> None:
         self.quarter += 1
+        if getattr(self, "timeouts_left", None) is not None and self.quarter in (3, 5):
+            settings = timeout_settings()
+            left = int(settings["per_half"] if self.quarter == 3 else settings["overtime"])
+            self.timeouts_left = {key: left for key in self.timeouts_left}
         if self.quarter == 3 and self.kickoff_model:
             self.halftime_pending = True
         fixes = clock_fixes()
@@ -2410,6 +2484,7 @@ class Game:
                 self.plays.append(play)
                 self.play_number += 1
                 self.tick_clock(play.type)
+                self.stop_clock(play, quarter, clock)
                 if live_pbp:
                     print(self._format_play_line(play, quarter, clock))
                 if play.field_goal_attempt:

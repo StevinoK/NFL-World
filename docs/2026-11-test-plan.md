@@ -75,3 +75,27 @@ remove inputs), refit `game_effects` on the held-out games, package, then backte
 
 - A larger backtest (training through 2023 to backtest 2024-25): the backtest stays at its current size.
 - Blending the sim with the market line.
+
+## Status on branch `ccr-3f8f7ac2-5qtlyb` (November 26)
+
+Code for these items is in place and unit-tested; none has been backtested, since the bundles live on the local
+machine. Each simulator change is off unless switched on (see "Experiment switches" in `nflsim/README.md`), so a
+paired-seed backtest (`NFLSIM_PAIRED_SEEDS=1`) can compare it with the live behavior.
+
+| Item | Where | How to test it |
+| --- | --- | --- |
+| Step 0: forward split | `fit_minimal --forward-validation` | Per-model held-out log loss against the default split |
+| Step 0: spread and total SD, mean squared z, home/away correlation | `forecast_scores` writes `forecast_calibration.csv` | Run on the live bundle's backtest first |
+| Step 0: drive statistics | Sim game rows carry drives; `joint_outcomes` scores drives, points per drive, red-zone trips and drive start against nflverse | New runs only (older runs have no drive columns) |
+| Step 1: team-strength uncertainty | `python -m nflsim.ridge.uncertainty`, then `NFLSIM_STRENGTH_DRAWS` | Spread/total SD and mean squared z, home/away correlation, player dispersions |
+| Step 1: 4th-down override off | `NFLSIM_MODEL_PLAY_CALLS=1` | Go-for-it rate in the old forced-FG zone, end-of-half FG attempts |
+| Step 2: two-point tries, safeties, onside kicks | `NFLSIM_SCORING_EXTRAS=nflsim/config/scoring_extras.json` | Margin key numbers, `two_point_tries`/`onside_tries`/`safeties` in the attempt diagnostics |
+| Step 2: timeouts, two-minute warning | Refit `time` with `--time-without-stoppages`, then `NFLSIM_TIMEOUTS=nflsim/config/timeouts.json` | Clock-model log loss, plays per game, points in the last two minutes of each half |
+| Step 2: PAT after return/defensive TDs | Always on | |
+
+Also always on: sacks are not pass attempts, end-zone interceptions are touchbacks unless returned past the 20,
+missed field goals go over at the spot of the kick. Not started: step 3 (new inputs in a refit) and step 4.
+
+The ridge posterior check (`docs/analysis/2026-11-accuracy/exp_strength_uncertainty.py`, 2023-25): pregame
+predictive variance of team pass/rush EPA per game is calibrated (var z 0.93 / 0.92); the rating part for pass EPA
+is a little large (variance scale 0.71), so start `NFLSIM_STRENGTH_DRAWS` at `"scale": 0.85`.

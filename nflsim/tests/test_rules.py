@@ -260,3 +260,62 @@ def test_shrunk_rates_pull_rare_margins_toward_the_window_rate():
     table = shrunk_rates(flags, margins, 21, prior_strength=10.0)
     assert table["default"] == 0.01 and np.isclose(table["-2"], (1 + 10 * 0.01) / 11, atol=1e-4)
     assert onside_window(4, 200) == "last5" and onside_window(4, 800) == "q4" and onside_window(3, 200) == "other"
+
+
+TIMEOUTS = Path(__file__).resolve().parents[1] / "config" / "timeouts.json"
+
+
+def timeout_game(monkeypatch, tmp_path, policy=None):
+    from nflsim.engine.simulation_runtime import TIMEOUTS_ENV
+    settings = json.loads(TIMEOUTS.read_text())
+    if policy is not None:
+        settings["policy"] = {key: policy for key in settings["policy"]}
+    path = tmp_path / "timeouts.json"
+    path.write_text(json.dumps(settings))
+    monkeypatch.setenv(TIMEOUTS_ENV, str(path))
+    runtime = full_game_runtime()
+    runtime.time_row_scope = "without_stoppages"
+    home, away = team("A", "home", runtime), team("B", "away", runtime)
+    return Game(away, home, "outdoors", runtime), home, away
+
+
+def test_timeouts_need_a_clock_model_trained_without_them(monkeypatch, tmp_path):
+    from nflsim.engine.simulation_runtime import TIMEOUTS_ENV
+    monkeypatch.setenv(TIMEOUTS_ENV, str(TIMEOUTS))
+    runtime = full_game_runtime()
+    with pytest.raises(ValueError, match="time-without-stoppages"):
+        Game(team("B", "away", runtime), team("A", "home", runtime), "outdoors", runtime)
+
+
+def test_the_two_minute_warning_and_a_called_timeout_stop_the_clock(monkeypatch, tmp_path):
+    game, home, away = timeout_game(monkeypatch, tmp_path, policy=1.0)
+    game.possession, game.defense, game.quarter = home, away, 4
+    run = Play(1, 10, 40, game=game)
+    run.type = "rush"
+    game.clock = 100.0
+    game.stop_clock(run, 4, 130.0)                    # ran from 2:10 through the warning
+    assert game.clock == 120 and game.timeouts_left[id(away)] == 3
+    game.clock = 20.0
+    game.stop_clock(run, 4, 90.0)                     # the defense calls one: only the play's seconds (<= 40) run off
+    assert 50.0 <= game.clock < 90.0 and game.timeouts_left[id(away)] == 2
+    game.timeouts_left = {id(home): 0, id(away): 0}
+    game.clock = 60.0
+    game.stop_clock(run, 4, 90.0)                     # none left: the clock keeps running
+    assert game.clock == 60.0
+    game.quarter, game.clock = 2, 0
+    game.advance_quarter()                            # a new half brings three back
+    assert set(game.timeouts_left.values()) == {3}
+
+
+def test_whole_games_with_timeouts_use_them_late(monkeypatch, tmp_path):
+    used, plays = [], []
+    for seed in range(20):
+        np.random.seed(seed)
+        random.seed(seed)
+        game, home, away = timeout_game(monkeypatch, tmp_path)
+        game.simulate_game()
+        used.append(game.diagnostics.get("timeouts", 0))
+        plays.append(len(game.plays))
+        assert game.diagnostics.get("two_minute_warnings", 0) <= 2
+        assert all(0 <= left <= 3 for left in game.timeouts_left.values())
+    assert 0 < np.mean(used) < 12

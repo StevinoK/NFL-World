@@ -592,7 +592,13 @@ def refit_specs(model_dir: Path) -> dict:
     specs = game_effects_specs({model: reduced_spec(model, spec) for model, spec in reference["models"].items()}, reference)
     specs = apply_dropped_inputs(specs, load_dropped_inputs(model_dir))
     trained = json.loads((model_dir / "reduced_model_manifest.json").read_text())["models"]
-    return {model: spec for model, spec in specs.items() if model in trained}
+    specs = {model: spec for model, spec in specs.items() if model in trained}
+    for spec in specs.values():
+        # Rows follow the refit's own choice (e.g. a clock model trained without timeout-stopped plays).
+        saved = model_dir / f"{spec['prefix']}_arch.json"
+        if saved.is_file() and "row_scope" in (sidecar := json.loads(saved.read_text())):
+            spec["sidecar"]["row_scope"] = sidecar["row_scope"]
+    return specs
 
 
 def stage_rows(args):

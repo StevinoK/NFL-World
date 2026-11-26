@@ -91,6 +91,7 @@ def prepare_frame(pbp, players, teams, semantics=None, seasons=(2017, 2024)):
     pbp = _filter_non_meaningful_games(pbp)
     pbp = pbp.sort_values(["game_id", "play_id"])
     pbp["elapsed_time"] = pbp.groupby("game_id").game_seconds_remaining.diff(-1)
+    pbp["followed_by_stoppage"] = followed_by_stoppage(pbp)
     pbp["net_yards"] = pbp.kick_distance-pbp.return_yards
     def attach(table, key, left, columns):
         nonlocal pbp
@@ -193,6 +194,17 @@ def special_teams_rows(model, frame):
     return rows, target
 
 
+def followed_by_stoppage(pbp):
+    """Whether the next row of the game is a timeout or the two-minute warning, which stopped this play's clock
+    (``pbp`` sorted by game and play). Unknown (False) without the timeout and description columns."""
+    stoppage = pd.Series(False, index=pbp.index)
+    if "timeout" in pbp:
+        stoppage |= pbp["timeout"].eq(1)
+    if "desc" in pbp:
+        stoppage |= pbp["desc"].astype("string").str.contains("two-minute warning", case=False, na=False).astype(bool)
+    return stoppage.groupby(pbp["game_id"]).shift(-1, fill_value=False).astype(bool)
+
+
 def classify(frame):
     return np.select([frame.incomplete_pass.eq(1), frame.complete_pass.eq(1), frame.rush_attempt.eq(1), frame.sack.eq(1), frame.punt_attempt.eq(1), frame.interception.eq(1), frame.field_goal_attempt.eq(1)], ["incomplete_pass", "complete_pass", "rush", "sack", "punt", "interception", "field_goal_attempt"], "other")
 
@@ -202,7 +214,7 @@ def classify(frame):
 ATTEMPT_MODELS = {"comp", "int"}
 
 
-def model_frame(model, pbp, players, roster, semantics=None):
+def model_frame(model, pbp, players, roster, semantics=None, time_without_stoppages=False):
     """Exclude nonfinite required ridge context after model-specific play selection.
 
     Legacy standalone frames without any ridge columns retain their old contract.
@@ -267,7 +279,14 @@ def model_frame(model, pbp, players, roster, semantics=None):
         if "elapsed_time" not in frame:
             raise ValueError("time training requires original prepared elapsed_time column")
         ordinary = frame.penalty.eq(0) & ~frame.play_type.isin(["no_play", "kickoff"])
-        frame = frame[(ordinary | no_play) & frame.elapsed_time.between(1, 120)]
+        keep = (ordinary | no_play) & frame.elapsed_time.between(1, 120)
+        if time_without_stoppages:
+            # Runoff when nobody stopped the clock; the simulator then calls timeouts and the two-minute warning
+            # itself (NFLSIM_TIMEOUTS), so they aren't counted twice.
+            if "followed_by_stoppage" not in frame:
+                raise ValueError("time_without_stoppages needs a prepared frame with followed_by_stoppage; prepare it again")
+            keep &= ~frame.followed_by_stoppage.astype(bool)
+        frame = frame[keep]
         target = frame.elapsed_time
     elif model == "fumble":
         frame["play_outcome"] = np.select([flag("pass_attempt") & flag("sack"), flag("pass_attempt") & flag("complete_pass"), flag("rush_attempt")], ["sack", "completion", "run"], "other")

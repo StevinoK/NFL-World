@@ -219,7 +219,8 @@ def model_rows(model: str, spec: dict, prepared: pd.DataFrame, players: pd.DataF
     prepared_for_model[row_id] = np.arange(len(prepared_for_model), dtype=np.int64)
     ridge_columns = [column for column in prepared_for_model if column.startswith("ridge_")]
     model_inputs = prepared_for_model.drop(columns=ridge_columns)
-    frame, target = model_frame(model, model_inputs, players, roster, semantics=None)
+    frame, target = model_frame(model, model_inputs, players, roster, semantics=None,
+                                time_without_stoppages=spec["sidecar"].get("row_scope") == "without_stoppages")
     if model in GOAL_CAPPED_MODELS:
         frame = with_goal_line_inputs(model, frame)
     if model == "play":
@@ -371,6 +372,9 @@ def main():
     parser.add_argument("--inputs", type=Path, default=INPUTS, help="Directory with pbp.parquet and roster.parquet")
     parser.add_argument("--dropped-inputs", type=Path,
                         help=f"JSON {{model: [inputs]}} to leave out; copied into the output as {DROPPED_INPUTS_FILE}")
+    parser.add_argument("--time-without-stoppages", action="store_true",
+                        help="Train the clock model on plays not followed by a timeout or the two-minute warning "
+                             "(needed for NFLSIM_TIMEOUTS)")
     parser.add_argument("--forward-validation", action="store_true",
                         help="Stop early on the latest training season, then refit on all of them for that many epochs")
     parser.add_argument("--recency-decay", type=float,
@@ -398,6 +402,8 @@ def main():
     if args.forward_validation:
         for spec in specs.values():
             spec["sidecar"]["forward_validation"] = True
+    if args.time_without_stoppages and "time" in specs:
+        specs["time"]["sidecar"]["row_scope"] = "without_stoppages"
     if args.summary_only:
         summaries, comparison = [], []
         for model, spec in specs.items():

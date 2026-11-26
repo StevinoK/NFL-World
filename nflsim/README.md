@@ -409,6 +409,7 @@ simulations (a Modal worker needs it set in its own environment):
 | `NFLSIM_CLOCK_FIXES=<settings.json>` or `off` | Overtime and kneel-downs; on by default from `config/clock_fixes.json` |
 | `NFLSIM_PAIRED_SEEDS=1` | Seeds that leave out the bundle and run, so two builds play each simulation from the same draws |
 | `NFLSIM_STRENGTH_DRAWS=<settings.json>` | Draws each ridge rating once per simulated game from its posterior: `{"sd_table": "<csv>", "scale": 1.0}`, table from `python -m nflsim.ridge.uncertainty` (below) |
+| `NFLSIM_TIMEOUTS=<settings.json>` | Three timeouts per team per half (two in overtime), called after clock-running plays by a policy from play-by-play, and the two-minute warning. `config/timeouts.json` comes from `python -m nflsim.sim.timeout_settings` (2021-25). Needs a clock model trained with `fit_minimal --time-without-stoppages`; the simulator refuses others, whose runoff already includes timeouts |
 | `NFLSIM_MODEL_PLAY_CALLS=1` | The play model's kick and punt calls stand on every down (end-of-half field goals, going for it on 4th down); only field goals beyond 70 yards are redrawn. Off: the older overrides force a field goal on 4th-and-2+ within 54 yards and turn early-down kicks and punts into passes and runs |
 
 Rules in `nflsim/engine/rules.py` apply to every bundle: a sack is not a pass attempt (as in NFL box scores),
@@ -438,6 +439,8 @@ Training options in `fit_minimal`: `--forward-validation` stops each network ear
 (where rule and play-calling drift shows) instead of a random fifth of games, then retrains on every training
 season for the chosen number of epochs; `--recency-decay <factor>` weights training plays down by that factor per
 season before the latest. The shared crc32 holdout for the game effects is unchanged either way.
+`--time-without-stoppages` trains the clock model on plays not followed by a timeout or the two-minute warning
+(recorded as the sidecar's `row_scope`, which the game-effects refit follows), for use with `NFLSIM_TIMEOUTS`.
 
 ## Seed-averaged models
 

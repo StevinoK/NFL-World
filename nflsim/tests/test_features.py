@@ -319,3 +319,18 @@ def test_coefficient_sds_follow_the_published_ratings(semantics):
     only = build_estimates(pbp, games, roster, params, [TARGETS[0]], feature_semantics=semantics,
                            predict_weeks={(2024, 4)}, coefficient_sds=limited)
     assert set(only[0].game_id) == {"2024_04_B_A"} and set(pd.DataFrame(limited).game_id) == {"2024_04_B_A"}
+
+
+def test_clock_rows_can_leave_out_plays_stopped_by_a_timeout_or_the_warning():
+    from nflsim.features.training_data import followed_by_stoppage, model_frame
+    plays = pd.DataFrame({
+        "game_id": ["g"] * 5, "play_id": [1, 2, 3, 4, 5],
+        "desc": ["run", "Timeout #1 by A", "pass", "Two-Minute Warning", "run"], "timeout": [0, 1, 0, 0, 0]})
+    assert followed_by_stoppage(plays).tolist() == [True, False, True, False, False]
+    frame = pd.DataFrame({"game_id": "g", "posteam": "A", "defteam": "B", "penalty": 0, "play_type": "run",
+                          "incomplete_pass": 0, "complete_pass": 0, "rush_attempt": 1, "sack": 0, "punt_attempt": 0,
+                          "interception": 0, "field_goal_attempt": 0, "elapsed_time": [30.0, 6.0, 35.0],
+                          "followed_by_stoppage": [False, True, False]})
+    assert len(model_frame("time", frame, pd.DataFrame(), pd.DataFrame())[0]) == 3
+    kept, target = model_frame("time", frame, pd.DataFrame(), pd.DataFrame(), time_without_stoppages=True)
+    assert target.tolist() == [30.0, 35.0]
