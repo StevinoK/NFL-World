@@ -311,10 +311,24 @@ class SimulationRuntime:
         )
         self._sync_hierarchical_runtime_schema()
         self.game_effects = GameEffects.load(self.data_dir)
+        self.apply_temperatures()
         strength = getattr(self.game_effects, "strength", None)
         if strength:  # a fitted team term reads its ratings from the team rows even when no network uses them
             self.required_team_feature_columns = sorted(
                 set(self.required_team_feature_columns) | set(strength["offense"]) | set(strength["defense"]))
+
+    def apply_temperatures(self) -> None:
+        """Divide each network's logits by the temperature its game effects were fit with, by scaling its output
+        layer, so every forward path (one row, batched, sklearn or compiled inputs) gets the same logits."""
+        temperatures = getattr(self.game_effects, "temperatures", {}) if self.game_effects is not None else {}
+        for model, temperature in temperatures.items():
+            network = self.model_dict.get(model)
+            out = getattr(network, "out", None)
+            if not isinstance(out, nn.Linear):
+                raise ValueError(f"{model}: a temperature needs a network with an output layer")
+            with torch.no_grad():
+                out.weight.div_(temperature)
+                out.bias.div_(temperature)
 
     def _record_schema_issue(self, message: str) -> None:
         if message not in self.schema_issues:

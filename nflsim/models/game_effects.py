@@ -170,8 +170,12 @@ def local_terms(head: str, base: torch.Tensor, label: torch.Tensor, delta: torch
 
 
 class GameEffectModel(torch.nn.Module):
-    def __init__(self, heads: dict[str, tuple[str, int]], game_dims: int, team_dims: int, private: bool, seed: int = 0):
+    def __init__(self, heads: dict[str, tuple[str, int]], game_dims: int, team_dims: int, private: bool, seed: int = 0,
+                 temperature: bool = False):
         super().__init__()
+        # Optional temperature per network, fit with the effects integrated out: the base logits are divided by it.
+        self.log_temperature = torch.nn.ParameterDict(
+            {model: torch.nn.Parameter(torch.zeros(1, dtype=DTYPE)) for model in heads} if temperature else {})
         generator = torch.Generator().manual_seed(seed)
         self.models = list(heads)
         self.heads = heads
@@ -193,6 +197,12 @@ class GameEffectModel(torch.nn.Module):
         self.private_dims = offset
         self.side_dims = self.team_dims + self.private_dims
         self.latent_dims = self.game_dims + 2 * self.side_dims
+
+    def scaled(self, model: str, base: torch.Tensor) -> torch.Tensor:
+        """A network's base logits under its fitted temperature (unchanged without one)."""
+        if model in self.log_temperature:
+            return base / self.log_temperature[model].exp()
+        return base
 
     def columns(self, model: str) -> torch.Tensor:
         """Latent indices each side's rows of a model load on: game block, that side's team block, its private block."""
@@ -225,6 +235,8 @@ class GameEffectModel(torch.nn.Module):
                 "team_loadings": self.team[model].detach().tolist(),
                 "private_scale": (self.log_scale[model].exp().detach() if self.private else torch.zeros(size, dtype=DTYPE)).tolist(),
             }
+            if model in self.log_temperature:
+                models[model]["temperature"] = float(self.log_temperature[model].exp().detach())
         return {"version": 1, "game_dims": self.game_dims, "team_dims": self.team_dims, "models": models}
 
 
@@ -281,7 +293,7 @@ def laplace_terms(effects: GameEffectModel, data: Data, z: torch.Tensor, curvatu
     gradient = -z.clone()
     precision = torch.eye(effects.latent_dims, dtype=DTYPE).repeat(games, 1, 1)
     for model, item in data.items.items():
-        ll, local_gradient, weight = local_terms(item["head"], item["base"], item["label"], shifts(effects, item, model, z), curvature, item.get("capped"))
+        ll, local_gradient, weight = local_terms(item["head"], effects.scaled(model, item["base"]), item["label"], shifts(effects, item, model, z), curvature, item.get("capped"))
         loglik = loglik.index_add(0, item["game"], ll)
         if not curvature or effects.latent_dims == 0:
             continue
@@ -334,9 +346,9 @@ def laplace_marginal(effects: GameEffectModel, data: Data, z: torch.Tensor) -> t
 
 
 def fit(data: Data, game_dims: int, team_dims: int, private: bool, iterations: int = 250, seed: int = 0,
-        learning_rate: float = 0.03, penalty: float = 1e-3, log_every: int = 25) -> GameEffectModel:
+        learning_rate: float = 0.03, penalty: float = 1e-3, log_every: int = 25, temperature: bool = False) -> GameEffectModel:
     heads = {model: (item["head"], item["width"]) for model, item in data.items.items()}
-    effects = GameEffectModel(heads, game_dims, team_dims, private, seed)
+    effects = GameEffectModel(heads, game_dims, team_dims, private, seed, temperature)
     optimizer = torch.optim.Adam(effects.parameters(), lr=learning_rate)
     z = None
     for iteration in range(iterations):
@@ -461,7 +473,7 @@ def effect_logits(effects: GameEffectModel | None, draws: int, games: int, seed:
         if effects is None:
             return item["base"]
         with torch.no_grad():
-            return item["base"] + shifts(effects, item, model, latent[draw])
+            return effects.scaled(model, item["base"]) + shifts(effects, item, model, latent[draw])
     return logits
 
 
@@ -552,7 +564,8 @@ def play_log_loss(data: Data, effects: GameEffectModel | None = None) -> pd.Seri
     result = {}
     for model, item in data.items.items():
         delta = effects.bias[model].detach()[None, :] if effects is not None else torch.zeros(1, item["base"].shape[1] if item["head"] == "multiclass" else 1, dtype=DTYPE)
-        ll = local_terms(item["head"], item["base"], item["label"], delta.expand(len(item["label"]), -1), False, item.get("capped"))[0]
+        base = effects.scaled(model, item["base"]).detach() if effects is not None else item["base"]
+        ll = local_terms(item["head"], base, item["label"], delta.expand(len(item["label"]), -1), False, item.get("capped"))[0]
         result[model] = float(-ll.mean())
     return pd.Series(result)
 
@@ -625,7 +638,8 @@ def stage_cv(args):
         total = 0.0
         for fold in (0, 1):
             train, test = data.subset(folds[fold]), data.subset(folds[1 - fold])
-            effects = fit(train, game_dims, team_dims, private, args.iterations, learning_rate=args.learning_rate, log_every=50)
+            effects = fit(train, game_dims, team_dims, private, args.iterations, learning_rate=args.learning_rate, log_every=50,
+                          temperature=args.temperature)
             total += float(importance_marginal(effects, test).sum())
         record = {"config": name, "game_dims": game_dims, "team_dims": team_dims, "private": private,
                   "games": len(data.games), "heldout_log_marginal": total}
@@ -646,8 +660,13 @@ def stage_final(args):
         cv.sort_values("heldout_log_marginal", ascending=False).to_csv(output / "cv_marginal_likelihood.csv", index=False)
         print(cv.to_string(index=False), flush=True)
     game_dims, team_dims, private = CONFIGS[args.choose]
-    effects = fit(data, game_dims, team_dims, private, args.iterations, learning_rate=args.learning_rate)
+    effects = fit(data, game_dims, team_dims, private, args.iterations, learning_rate=args.learning_rate,
+                  temperature=args.temperature)
     independent = fit(data, 0, 0, False, args.iterations, learning_rate=args.learning_rate, log_every=0)
+    if args.temperature:
+        temperatures = {model: float(value.exp().detach()) for model, value in effects.log_temperature.items()}
+        write_json(output / "temperatures.json", temperatures)
+        print(f"[temperature] {temperatures}", flush=True)
     spec = effects.export()
     spec["fit"] = {"config": args.choose, "holdout_games": len(data.games), "rows": data.rows,
                    "seasons": list(args.seasons), "holdout": "crc32(game_id) % 5 == 0 (nflsim.models.train.holdout_games)"}
@@ -695,6 +714,9 @@ def main():
     parser.add_argument("--learning-rate", type=float, default=0.05)
     parser.add_argument("--draws", type=int, default=200)
     parser.add_argument("--threads", type=int)
+    parser.add_argument("--temperature", action="store_true",
+                        help="cv/final: also fit one temperature per network (base logits divided by it); the bundle's "
+                             "runtime applies it to the network's output layer")
     args = parser.parse_args()
     if args.threads:
         torch.set_num_threads(args.threads)

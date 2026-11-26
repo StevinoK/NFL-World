@@ -61,6 +61,9 @@ class GameEffects:
                 "rain": np.asarray(entry.get("rain", np.zeros(size)), dtype=np.float64).reshape(size),
             }
         self.has_rain = any("rain" in entry for entry in spec["models"].values())
+        # Optional per-network temperature from the effects fit (nflsim.models.game_effects --temperature).
+        self.temperatures = {model: float(entry["temperature"]) for model, entry in spec["models"].items()
+                             if "temperature" in entry}
         # Optional team-strength term: fixed coefficients on standardized team ratings, own offense and opponent defense
         # (an experiment; bundles without it are unchanged).
         strength = spec.get("strength")
