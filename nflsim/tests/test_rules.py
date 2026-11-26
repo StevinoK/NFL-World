@@ -366,3 +366,12 @@ def test_the_run_location_stage_draws_a_lane_for_the_rush_row():
     result, _, game = play(runtime, yardline=40)
     assert result.type == "rush" and game.diagnostics["run_lanes"] == {"left_tackle": 1}
     assert seen["rush"]["run_lane"] == "left_tackle" and seen["rush"]["pg_run_lane_off_ypc"] == 5.5
+
+
+def test_lane_counts_reach_the_diagnostics_row():
+    from nflsim.engine.injected_inputs import RUN_LANES
+    runtime = StubRuntime(run_location=[[0.0] * len(RUN_LANES)])
+    game = Game(team("B", "away", runtime), team("A", "home", runtime), "outdoors", runtime)
+    game.diagnostics["run_lanes"] = {"middle": 3}
+    row = game.diagnostics_row()
+    assert row["run_lane_middle"] == 3.0 and row["run_lane_left_end"] == 0.0

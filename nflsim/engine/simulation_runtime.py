@@ -2043,6 +2043,8 @@ class Game:
                 "onside_tries": float(self.diagnostics.get("onside", {}).get("tries", 0)),
                 "onside_recovered": float(self.diagnostics.get("onside", {}).get("recovered", 0)),
                 "safeties": float(self.diagnostics.get("safeties", 0))} if scoring_extras() is not None else {}),
+            **({f"run_lane_{lane}": float(self.diagnostics.get("run_lanes", {}).get(lane, 0)) for lane in injected_inputs.RUN_LANES}
+               if "run_location" in self.runtime.model_dict else {}),
             **({"timeouts": float(self.diagnostics.get("timeouts", 0)),
                 "two_minute_warnings": float(self.diagnostics.get("two_minute_warnings", 0))} if self.timeouts_left is not None else {}),
             **({"kneels": float(self.diagnostics.get("kneels", 0)),
