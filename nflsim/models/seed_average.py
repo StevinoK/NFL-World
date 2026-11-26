@@ -28,7 +28,7 @@ from sklearn.preprocessing import OneHotEncoder, StandardScaler
 
 from nflsim.engine.hyperparameters import build_optimizer, default_hyperparameters
 from nflsim.engine.model_architecture import build_network
-from nflsim.models.fit_minimal import REFERENCE, metric_record, model_rows
+from nflsim.models.fit_minimal import REFERENCE, metric_record, model_rows, with_refit_tables
 from nflsim.models.game_effects import encode_labels, forward, load_inputs, load_network, refit_specs, transform
 from nflsim.models.train import holdout_split
 from nflsim.paths import output_dir, write_json
@@ -135,6 +135,7 @@ def main():
     directories = [args.base_dir, *args.seed_dir]
     specs = refit_specs(args.base_dir)
     prepared, players, roster = load_inputs(REFERENCE, tuple(args.seasons), args.player_table, args.team_table, args.inputs)
+    prepared = with_refit_tables(prepared, args.base_dir)
     for model in args.models:
         spec, prefix = specs[model], specs[model]["prefix"]
         if (output / f"{model}_seed_average.json").is_file():

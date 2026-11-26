@@ -13,6 +13,7 @@ from nflsim.engine.batching import Batcher
 from nflsim.paths import canonical_hash
 from nflsim.sim.runtime import RidgeGame, RidgeRuntime
 from nflsim.engine.simulation_runtime import Player, Team
+from nflsim.features import pregame_tables
 from nflsim.sim import strength_draws
 
 _RUNTIMES = {}
@@ -29,6 +30,12 @@ def simulation_seed(bundle_hash, run_id, game_id, simulation, seed):
     if os.environ.get(PAIRED_SEEDS_ENV) == "1":
         return int(canonical_hash(["paired", game_id, int(simulation), int(seed)])[:8], 16)
     return int(canonical_hash([bundle_hash, run_id, game_id, int(simulation), int(seed)])[:8], 16)
+
+
+def game_week(game_id) -> tuple[int, int] | None:
+    """(season, week) from an nflverse game id such as 2026_07_KC_BUF; None for other ids."""
+    parts = str(game_id).split("_")
+    return (int(parts[0]), int(parts[1])) if len(parts) >= 2 and parts[0].isdigit() and parts[1].isdigit() else None
 
 
 def get_runtime(directory, bundle_hash):
@@ -51,6 +58,9 @@ def simulate_one(task, runtime, simulation):
     torch.manual_seed(seed)
     runtime.seed(seed)
     runtime.neutral_site = bool(task.get("neutral_site", False))
+    # Pregame tables (NFLSIM_PREGAME_TABLES) for refits with pg_* inputs, keyed by the game's season and week.
+    runtime.pregame = pregame_tables.simulator_lookup()
+    runtime.game_week = game_week(task["game_id"])
     runtime.reset_nan_input_log()
     def players(snapshots):
         return [Player(str(item["name"]), str(item["position"]), str(item["player_id"]), pd.DataFrame([item["attributes"]])) for item in snapshots]

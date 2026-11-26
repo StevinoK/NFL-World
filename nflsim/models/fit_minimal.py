@@ -4,6 +4,7 @@ import argparse
 import copy
 import html.parser
 import json
+import shutil
 from pathlib import Path
 
 import joblib
@@ -73,6 +74,18 @@ def apply_added_inputs(specs: dict, added: dict[str, list[str]]) -> dict:
             raise ValueError(f"{model}: the simulator can't supply added inputs {unsupported}")
         spec["columns"] = list(dict.fromkeys([*spec["columns"], *columns]))
     return result
+
+
+PREGAME_TABLES_FILE = "pregame_tables.csv"
+
+
+def with_refit_tables(prepared: pd.DataFrame, directory: Path) -> pd.DataFrame:
+    """The prepared frame with the refit's pregame tables joined, when the refit was made with them."""
+    path = Path(directory) / PREGAME_TABLES_FILE
+    if not path.is_file():
+        return prepared
+    from nflsim.features.pregame_tables import attach_pregame_tables
+    return attach_pregame_tables(prepared, pd.read_csv(path))
 
 
 def load_added_inputs(directory: Path) -> dict[str, list[str]]:
@@ -402,6 +415,9 @@ def main():
     parser.add_argument("--added-inputs", type=Path,
                         help=f"JSON {{model: [inputs]}} to add (situation, derived and pregame-table inputs the simulator "
                              f"can supply); copied into the output as {ADDED_INPUTS_FILE}")
+    parser.add_argument("--pregame-tables", type=Path,
+                        help="pregame_tables.csv from nflsim.features.pregame_tables, for pg_* added inputs (copied into "
+                             f"the output as {PREGAME_TABLES_FILE})")
     parser.add_argument("--cross-fit", action="store_true",
                         help="Train each network once per held-out fifth of games, plus once on every game for the bundle; "
                              "game_effects rows --cross-fit then fits the effects on every game's out-of-fold logits")
@@ -487,6 +503,9 @@ def main():
     pbp = pd.read_parquet(args.inputs / "pbp.parquet")
     roster = pd.read_parquet(args.inputs / "roster.parquet")
     prepared = prepare_frame(pbp, players, teams, ISOLATED_MU_CONTEXT_V2, seasons=tuple(args.seasons))
+    if args.pregame_tables is not None:
+        shutil.copy2(args.pregame_tables, output / PREGAME_TABLES_FILE)
+    prepared = with_refit_tables(prepared, output)
     summaries, comparison = [], []
     if args.resume:
         for model, spec in specs.items():

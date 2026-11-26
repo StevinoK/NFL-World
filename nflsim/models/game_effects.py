@@ -639,10 +639,11 @@ def refit_specs(model_dir: Path) -> dict:
 
 
 def stage_rows(args):
-    from nflsim.models.fit_minimal import REFERENCE
+    from nflsim.models.fit_minimal import REFERENCE, with_refit_tables
     specs = refit_specs(args.model_dir)
     if not (args.output / "holdout_rows.pkl").is_file():
         prepared, players, roster = load_inputs(REFERENCE, tuple(args.seasons), args.player_table, args.team_table, args.inputs)
+        prepared = with_refit_tables(prepared, args.model_dir)
         # Cross-fit refits give out-of-fold logits for every game; otherwise only the shared held-out fifth is unseen.
         rows = model_rows(args.model_dir, specs, prepared, players, roster,
                           keep=None if args.cross_fit else holdout_games, cross_fit=args.cross_fit)
@@ -650,6 +651,7 @@ def stage_rows(args):
     season = (args.eval_season, args.eval_season)
     if not (args.output / "eval_rows_new.pkl").is_file():
         prepared, players, roster = load_inputs(args.compare_bundle, season, args.player_table, args.team_table, args.inputs)
+        prepared = with_refit_tables(prepared, args.model_dir)
         save_rows(model_rows(args.model_dir, specs, prepared, players, roster), args.output / "eval_rows_new.pkl")
     prepared, players, roster = load_inputs(args.compare_bundle, season, inputs=args.inputs)
     old_specs = json.loads((args.compare_bundle / "model_manifest.json").read_text())["models"]

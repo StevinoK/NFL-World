@@ -1862,6 +1862,10 @@ class Game:
                           if set(injected_inputs.TIMEOUT_COLUMNS) & set(runtime.injected_columns(model))]
         if needs_timeouts and self.timeouts_left is None:
             raise ValueError(f"{needs_timeouts} take timeouts remaining as inputs; turn on NFLSIM_TIMEOUTS")
+        needs_tables = [model for model in runtime.model_dict
+                        if any(column.startswith(injected_inputs.PREGAME_PREFIX) for column in runtime.injected_columns(model))]
+        if needs_tables and (getattr(runtime, "pregame", None) is None or getattr(runtime, "game_week", None) is None):
+            raise ValueError(f"{needs_tables} take pregame-table inputs; set NFLSIM_PREGAME_TABLES")
         self.opening_receiver = None
         self.drives: Dict[int, List[Dict[str, Any]]] = {}
         self.current_drive: Optional[Dict[str, Any]] = None
@@ -2250,6 +2254,10 @@ class Game:
             "diff_time_ratio": injected_inputs.diff_time_ratio(offense.score - defense.score, self.game_seconds()),
             "_attributes": offense.attributes,
         }
+        tables, week = getattr(runtime, "pregame", None), getattr(runtime, "game_week", None)
+        if tables is not None and week is not None:
+            from nflsim.features.pregame_tables import game_state_values
+            state.update(game_state_values(tables, week[0], week[1], offense.name, defense.name))
         if getattr(self, "timeouts_left", None) is not None:
             state["posteam_timeouts_remaining"] = self.timeouts_left[id(offense)]
             state["defteam_timeouts_remaining"] = self.timeouts_left[id(defense)]

@@ -7,8 +7,9 @@ expected column that the row lacks and that this module knows how to supply:
 - the play's situation, published by the game before each snap (quarter, seconds left in the half, both teams'
   timeouts, whether the offense gets the second-half kickoff, the score margin scaled by elapsed time);
 - values derived from the row itself (air yards past the line to gain, a throw at the line of scrimmage);
-- pregame team columns read from the offense's attributes (weather, and the tables in
-  ``nflsim.features.pregame_tables``).
+- pregame team columns: weather from the offense's attributes, and the ``pg_*`` tables of
+  ``nflsim.features.pregame_tables`` (NFLSIM_PREGAME_TABLES), offense and league columns for the team with the
+  ball and defense columns for its opponent.
 
 Training computes the same columns from play-by-play (``add_training_columns``), so a model sees each input
 defined one way in both places.
@@ -29,9 +30,12 @@ DERIVED_COLUMNS = ("distance_to_sticks", "air_is_zero")
 ATTRIBUTE_COLUMNS: set[str] = set(WEATHER_COLUMNS)
 
 
+PREGAME_PREFIX = "pg_"  # nflsim.features.pregame_tables, published with the situation
+
+
 def injectable(columns) -> list[str]:
     known = set(SITUATION_COLUMNS) | set(DERIVED_COLUMNS) | ATTRIBUTE_COLUMNS
-    return [column for column in columns if column in known]
+    return [column for column in columns if column in known or str(column).startswith(PREGAME_PREFIX)]
 
 
 def diff_time_ratio(margin: float, game_seconds_remaining: float) -> float:
@@ -62,7 +66,7 @@ def fill(columns, row, state: dict) -> dict:
             continue
         if column in DERIVED_COLUMNS:
             value = derived(column, row)
-        elif column in SITUATION_COLUMNS:
+        elif column in SITUATION_COLUMNS or column.startswith(PREGAME_PREFIX):
             value = state.get(column)
         else:
             value = attributes.get(column) if attributes is not None else None
