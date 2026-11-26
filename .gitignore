@@ -45,3 +45,6 @@ rb_covs.csv
 data/madden/
 # FantasyLabs contest data (third-party; local use only)
 data/fantasylabs/
+
+# Library caches written under the experiment root (matplotlib font list)
+nflsim/artifacts/cache/
