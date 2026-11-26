@@ -8,7 +8,9 @@ the slots and the actual stats). Every stat is divided by one fixed scale, its s
 in the comparison, so the multivariate scores weigh stats evenly and every run is scored on the same scale. Stats with no
 actual value (a slot player who did not play) are left out of that team-game. All scores are lower-is-better.
 
-Runs are compared on the games they share; a difference's standard error treats each game as one sample.
+Runs are compared on the games they share; a difference's standard error treats each game as one sample. A calibration
+table (forecast_calibration.csv) adds each run's simulated spread and total SD against its errors, mean squared z, and
+the simulated against the observed home/away score correlation.
 
     python -m nflsim.sim.forecast_scores --season 2026 --run live=<run dir> --run pruned=<run dir> [--output <dir>]
 """
@@ -46,7 +48,40 @@ def game_scores(run: Path) -> pd.DataFrame:
                      "crps_total": crps(total, record["actual_home_score"] + record["actual_away_score"]),
                      # Both teams' points together, so the home/away dependence counts (unlike spread and total alone).
                      "energy_points": energy_score(sims[["home", "away"]].to_numpy(float),
-                                                   np.array([record["actual_home_score"], record["actual_away_score"]], float))})
+                                                   np.array([record["actual_home_score"], record["actual_away_score"]], float)),
+                     # Moments for the calibration table (not scores).
+                     "actual_home": float(record["actual_home_score"]), "actual_away": float(record["actual_away_score"]),
+                     "sim_home_mean": float(sims.home.mean()), "sim_away_mean": float(sims.away.mean()),
+                     "sim_spread_sd": float(spread.std(ddof=1)), "sim_total_sd": float(total.std(ddof=1)),
+                     "sim_home_away_corr": float(np.corrcoef(sims.home, sims.away)[0, 1])
+                     if sims.home.std() > 0 and sims.away.std() > 0 else np.nan})
+    return pd.DataFrame(rows)
+
+
+def calibration(per_game: pd.DataFrame) -> pd.DataFrame:
+    """Per run: is the spread of the simulated scores as large as the run's own errors, and do the two teams' scores
+    move together as much as real ones do?
+
+    A calibrated run has sim SD close to error SD (RMSE of the sim mean) and a mean squared z near 1; above 1 the
+    simulated scores are too narrow. ``sim_home_away_corr`` averages the within-game correlation of the simulated
+    scores; ``observed_home_away_corr`` correlates the two teams' errors (actual minus sim mean) across games.
+    """
+    rows = []
+    for label, frame in per_game.groupby("label", sort=False):
+        spread_error = (frame.actual_home - frame.actual_away) - (frame.sim_home_mean - frame.sim_away_mean)
+        total_error = (frame.actual_home + frame.actual_away) - (frame.sim_home_mean + frame.sim_away_mean)
+        rows.append({
+            "label": label, "games": len(frame),
+            "spread_bias": float(spread_error.mean()), "spread_rmse": float(np.sqrt((spread_error ** 2).mean())),
+            "spread_sim_sd": float(np.sqrt((frame.sim_spread_sd ** 2).mean())),
+            "spread_mean_sq_z": float(((spread_error / frame.sim_spread_sd) ** 2).mean()),
+            "total_bias": float(total_error.mean()), "total_rmse": float(np.sqrt((total_error ** 2).mean())),
+            "total_sim_sd": float(np.sqrt((frame.sim_total_sd ** 2).mean())),
+            "total_mean_sq_z": float(((total_error / frame.sim_total_sd) ** 2).mean()),
+            "sim_home_away_corr": float(frame.sim_home_away_corr.mean()),
+            "observed_home_away_corr": float(np.corrcoef(frame.actual_home - frame.sim_home_mean,
+                                                         frame.actual_away - frame.sim_away_mean)[0, 1]),
+        })
     return pd.DataFrame(rows)
 
 
@@ -115,8 +150,10 @@ def main() -> None:
         output = output_dir(args.output)
         per_game.to_csv(output / "forecast_scores_by_game.csv", index=False)
         summary.to_csv(output / "forecast_scores.csv", index=False)
+        calibration(per_game).to_csv(output / "forecast_calibration.csv", index=False)
     with pd.option_context("display.width", 200, "display.float_format", "{:.4f}".format):
         print(summary.pivot(index="score", columns="label", values="mean")[list(runs)])
+        print(calibration(per_game).set_index("label").T)
         print(summary[summary.label.ne(next(iter(runs)))].to_string(index=False))
 
 

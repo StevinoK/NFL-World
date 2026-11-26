@@ -48,3 +48,21 @@ def test_game_scores_include_the_joint_points_energy_score(tmp_path):
         scored[label] = game_scores(run).iloc[0]
     # Both teams beat their means: only the forecast that has them move together scores well on both at once.
     assert scored["together"].energy_points < scored["apart"].energy_points
+
+
+def test_calibration_flags_scores_that_are_too_narrow():
+    import pandas as pd
+
+    from nflsim.sim.forecast_scores import calibration
+
+    rng = np.random.default_rng(4)
+    games = 4000
+    home_mean, away_mean = rng.normal(24, 3, games), rng.normal(21, 3, games)
+    # Real scores vary by 10 points around the sim means, independently for the two teams.
+    frame = pd.DataFrame({"label": "narrow", "actual_home": home_mean + rng.normal(0, 10, games),
+                          "actual_away": away_mean + rng.normal(0, 10, games), "sim_home_mean": home_mean,
+                          "sim_away_mean": away_mean, "sim_spread_sd": 10.0, "sim_total_sd": 10.0,
+                          "sim_home_away_corr": 0.1})
+    row = calibration(frame).iloc[0]
+    assert np.isclose(row.spread_rmse, np.sqrt(200), rtol=0.05) and np.isclose(row.spread_mean_sq_z, 2.0, rtol=0.1)
+    assert np.isclose(row.total_mean_sq_z, 2.0, rtol=0.1) and abs(row.observed_home_away_corr) < 0.05
