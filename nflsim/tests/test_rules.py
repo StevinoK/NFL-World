@@ -206,6 +206,20 @@ def test_drive_points_add_up_to_the_score_over_whole_games():
 SETTINGS = Path(__file__).resolve().parents[1] / "config" / "scoring_extras.json"
 
 
+def test_penalties_stop_at_half_the_distance_to_the_goal():
+    from nflsim.engine.simulation_runtime import half_distance
+    assert half_distance(6, -10) == -3 and half_distance(30, -10) == -10      # own 6: holding moves it to the 3
+    assert half_distance(96, 15) == 2 and half_distance(50, 15) == 15
+
+
+def test_scoring_extras_are_on_by_default_and_can_be_turned_off(monkeypatch):
+    from nflsim.engine.simulation_runtime import SCORING_EXTRAS_ENV, scoring_extras
+    monkeypatch.delenv(SCORING_EXTRAS_ENV, raising=False)
+    assert scoring_extras()["per_game"]["safeties"] > 0
+    monkeypatch.setenv(SCORING_EXTRAS_ENV, "off")
+    assert scoring_extras() is None
+
+
 def test_onside_chance_reads_the_window_and_the_kickers_margin():
     from nflsim.engine.simulation_runtime import onside_chance
     extras = {"max_margin": 21, "onside": {"last5": {"-7": 0.5, "default": 0.3}, "q4": {"default": 0.1},

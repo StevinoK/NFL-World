@@ -1071,16 +1071,27 @@ SCORING_EXTRAS_ENV = "NFLSIM_SCORING_EXTRAS"
 _SCORING_EXTRAS: Dict[str, Any] = {}
 
 
+SCORING_EXTRAS_DEFAULT = Path(__file__).resolve().parents[1] / "config" / "scoring_extras.json"
+
+
 def scoring_extras() -> Optional[Dict[str, Any]]:
-    """Two-point tries and safeties (an experiment): on only when NFLSIM_SCORING_EXTRAS names a settings JSON."""
+    """Two-point tries, safeties and onside kicks: on by default from config/scoring_extras.json. NFLSIM_SCORING_EXTRAS
+    names another settings JSON, or turns them off with 0, off or none."""
     import os
 
-    path = os.environ.get(SCORING_EXTRAS_ENV)
-    if not path:
+    path = os.environ.get(SCORING_EXTRAS_ENV, "").strip()
+    if path.lower() in {"0", "off", "none", "false"}:
         return None
+    path = path or str(SCORING_EXTRAS_DEFAULT)
     if path not in _SCORING_EXTRAS:
         _SCORING_EXTRAS[path] = json.loads(Path(path).read_text(encoding="utf-8"))
     return _SCORING_EXTRAS[path]
+
+
+def half_distance(yardline: float, yards: float) -> float:
+    """Penalty yards actually enforced from a spot: never more than half the distance to either goal line."""
+    spot = float(np.clip(yardline, 0, 100))
+    return max(yards, -spot / 2) if yards < 0 else min(yards, (100 - spot) / 2)
 
 
 TIMEOUTS_ENV = "NFLSIM_TIMEOUTS"
@@ -2446,6 +2457,7 @@ class Game:
                     self.diagnostics["penalty_no_play_count"] += 1
                     pre_down, pre_distance, pre_yardline = self.down, self.distance, self.yardline
                     penalty_yards, auto_first_down = self._sample_penalty_outcome("no_play", "not_applicable")
+                    penalty_yards = half_distance(self.yardline, penalty_yards)
                     self.diagnostics["penalty_yards_sum"] += penalty_yards
                     self.diagnostics["penalty_yards_abs_sum"] += abs(penalty_yards)
                     self.yardline = float(np.clip(self.yardline + penalty_yards, 0, 100))
@@ -2531,6 +2543,7 @@ class Game:
                         penalty_on_play = True
                         self.diagnostics["penalty_on_play_count"] += 1
                         penalty_yards, auto_first_down = self._sample_penalty_outcome("on_play", play.type)
+                        penalty_yards = half_distance(self.yardline + play.yards_gained, penalty_yards)
                         self.diagnostics["penalty_yards_sum"] += penalty_yards
                         self.diagnostics["penalty_yards_abs_sum"] += abs(penalty_yards)
                         if auto_first_down:

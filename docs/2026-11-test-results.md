@@ -126,3 +126,14 @@ worse by more than 1 SE; harmful = any of those four worse by 2 SE or more.
 
 Recommendation: turn on scoring extras by default only; keep the others opt-in. Always-on fixes on the branch are
 a small, consistent improvement over `main`.
+
+## Follow-up: scoring extras on by default
+
+- `NFLSIM_SCORING_EXTRAS` is now on by default with `nflsim/config/scoring_extras.json`; `NFLSIM_SCORING_EXTRAS=off`
+  turns it off, and a path still picks another settings file. Play calls and strength draws stay opt-in.
+- Safety rate: penalties were enforced in full up to the goal line (a pre-snap penalty at the 3 put the next snap on
+  the goal line, and any no-gain play there was a safety). Penalties now stop at half the distance to either goal
+  line. On weeks 1-3 (48 games, 200 sims, paired seeds) safeties fell from 0.102 to 0.084 per game (SE 0.003; real
+  0.048); two-point and onside rates unchanged; net penalty yards per game -1.3 to -4.1, since fouls near the
+  opponent's goal line are capped too. The remaining excess comes from sacks and runs out of backed-up spots, a
+  play-model matter, left as it is.
