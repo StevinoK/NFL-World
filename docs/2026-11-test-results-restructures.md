@@ -197,3 +197,70 @@ One refit with **situation + timeouts inputs** (both add to `play` and `time`, a
   - runlane once rushing-yards bias is understood.
   - multitask once the special-teams heads get their own capacity or loss weights, since the play and rusher gains
     are real but the trunk favors the large models.
+
+## Follow-up: combined refit
+
+Run 2026-11-27 16:03-20:32, built as the section above proposed.
+
+- **Inputs:** situation and timeouts together (`play` +6 inputs, `time` +5, `comp`/`int`/`yac` +2 each), and the clock
+  model trained without timeout-stopped plays.
+- **Training:** `--cross-fit`, then `play target rusher time` seed-averaged over seeds 42, 43 and 44.
+- **Game effects:** from cross-fit rows over 2,364 games, `team3`.
+- **Backtest:** same settings as every other run, with `NFLSIM_TIMEOUTS`.
+
+**Timing:**
+- Cross-fit base refit: 153 min on 4 threads.
+- Extra seeds: 18 min each, run in parallel with the base refit on 4 more threads.
+- Seed averaging: 8 min.
+- Game effects and packaging: 43 min.
+- Backtest: 63 min on 7 workers.
+
+**Before looking at the results, the bar for adopting it was:**
+- helpful against `control` by the decision rule;
+- none of Brier, spread CRPS, total CRPS or energy_points worse than crossfit, situation or timeouts alone by more
+  than 1 SE.
+
+It passes both. It has the best mean of every run on all four scores
+(`nflsim/outputs/restructures_scores_combined`, control first).
+
+| Run | Brier (z) | Spread CRPS (z) | Total CRPS (z) | energy_points (z) | Stat-line energy (z) | Variogram (z) |
+| --- | --- | --- | --- | --- | --- | --- |
+| control | 0.2367 | 7.322 | 7.788 | 8.363 | 6.203 | 85.66 |
+| crossfit | −0.0128 (−2.2) | −0.158 (−1.5) | −0.010 (−0.1) | −0.094 (−0.9) | +0.041 (+1.4) | +0.63 (+1.4) |
+| situation | −0.0109 (−2.3) | −0.094 (−1.0) | −0.133 (−1.1) | −0.111 (−1.3) | −0.015 (−0.8) | −0.41 (−1.4) |
+| timeouts | −0.0073 (−2.1) | −0.090 (−1.5) | −0.079 (−1.0) | −0.085 (−1.5) | −0.038 (−2.5) | −0.70 (−2.9) |
+| **combined** | **−0.0173 (−2.8)** | **−0.214 (−1.8)** | **−0.154 (−1.0)** | **−0.180 (−1.6)** | −0.031 (−1.1) | −0.83 (−1.9) |
+
+| Run | Spread SD / RMSE | Spread mean z² | Total SD / RMSE | Total mean z² | Total bias | Sim home/away corr (observed) |
+| --- | --- | --- | --- | --- | --- | --- |
+| control | 11.49 / 12.92 | 1.278 | 13.30 / 13.74 | 1.072 | −0.38 | 0.141 (0.064) |
+| crossfit | 12.70 / 12.66 | 1.006 | 13.64 / 13.66 | 1.018 | −1.20 | 0.070 (0.075) |
+| combined | 12.76 / 12.68 | **1.002** | 13.74 / 13.48 | 0.963 | −1.79 | 0.073 (0.053) |
+
+**Out-of-fold log loss against the control's held-out log loss**
+
+| Model | Change |
+| --- | --- |
+| play | −4.36% |
+| int | −2.65% |
+| time | −1.46% |
+| comp | −0.47% |
+| target | −0.39% |
+| rusher | −0.38% |
+| yac | +0.19% |
+
+The seed-averaged networks' own `*_fit_metrics.json` values (play −4.64%, rusher −2.30%) are scored on the held-out
+fifth, which the cross-fit full-data networks trained on. So they aren't clean held-out numbers.
+
+**What still needs work:**
+- **Team rushing yards:** bias grows from +3.1 to +7.6 per team-game. Crossfit alone was +2.0, situation +2.7,
+  timeouts +4.3.
+- **Drives and points:** drives bias is +0.54 (control +0.14) and team points bias is +0.89 (control +0.19).
+- **Dispersion and correlation:** mean absolute log dispersion is 0.059 (control 0.054) and mean correlation gap is
+  0.058 (0.053).
+- **Total spread:** total mean z² is 0.96, slightly too wide.
+- **Seed averaging's lift is smaller here.** Stat-line energy improves −1.1 SE, against seedavg alone's −4.6 SE.
+
+**Verdict:** adopt as the next candidate refit. It is the only run that improves all four headline scores at once
+and fixes spread calibration. Before it goes live, look into the rushing-yards bias, probably from the clock model
+trained without timeout stoppages (more plays per game), and check plays per game against real.

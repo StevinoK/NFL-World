@@ -4,7 +4,7 @@ import numpy as np
 import pandas as pd
 
 from nflsim.engine.cascade_model_training import _filter_non_meaningful_games
-from nflsim.engine.injected_inputs import add_training_columns
+from nflsim.engine.injected_inputs import RUN_LANES, add_training_columns
 from nflsim.configuration import MODEL_CONTEXT, V2_MODEL_CONTEXT, context_columns
 from nflsim.features.builder import canonicalize_teams
 from nflsim.features.slots import USAGE_COLUMNS, rank_slots
@@ -231,7 +231,7 @@ def model_frame(model, pbp, players, roster, semantics=None, time_without_stoppa
         frame, _ = model_frame("rush", pbp, players, roster, semantics)
         if "run_lane" not in frame:
             raise ValueError("run_location needs run_lane (prepare the frame again)")
-        keep = frame.run_lane.notna().to_numpy()
+        keep = frame.run_lane.isin(RUN_LANES).to_numpy()
         frame = frame.loc[keep].reset_index(drop=True)
         return frame, frame.run_lane.astype(str)
     frame, players, roster = [canonicalize_teams(table) for table in (pbp, players, roster)]
@@ -338,6 +338,9 @@ def model_frame(model, pbp, players, roster, semantics=None, time_without_stoppa
         target = target.iloc[np.flatnonzero(eligible.to_numpy())]
         frame = frame.loc[eligible]
     frame = frame.reset_index(drop=True)
+    if "run_lane" in frame:
+        # Uncharted runs carry pandas NA, which the input encoder can't mix with strings: name them.
+        frame["run_lane"] = frame.run_lane.where(frame.run_lane.isin(RUN_LANES), "unknown").astype(str)
     if diagnostics is not None:
         frame.attrs["ridge_context_eligibility"] = diagnostics
     return frame, pd.Series(target.to_numpy())
